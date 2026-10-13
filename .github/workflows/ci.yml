@@ -1,0 +1,58 @@
+name: CI
+
+permissions: {}
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@1691a0c89736c47864459a39ca53ce1a5e114dbb # v5.3.1
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Install dependencies
+        run: uv sync
+      - name: Run lint
+        run: make check mypy
+
+  test:
+    name: Test
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@1691a0c89736c47864459a39ca53ce1a5e114dbb # v5.3.1
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install
+      - name: Install dependencies
+        run: uv sync
+      - name: Run tests
+        run: make test-v

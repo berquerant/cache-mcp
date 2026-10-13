@@ -1,0 +1,160 @@
+import time
+from pathlib import Path
+from typing import Any
+
+import anyio
+import pytest
+from mcp.types import CallToolResult
+
+from cache_mcp.models import Config
+from cache_mcp.server import create_mcp_server
+
+
+@pytest.fixture
+def test_config(tmp_path: Path) -> Config:
+    return Config(
+        dir=tmp_path / "cache_server",
+        max_ttl=3600,
+        max_cache_size=1024 * 1024,
+        max_total_compressed_cache_size=10 * 1024 * 1024,
+    )
+
+
+# Table-Driven tests for MCPServer call_tool (get, set, exist, delete, purge)
+TOOL_TEST_CASES = [
+    (
+        "roundtrip_via_args",
+        {
+            "type": "command",
+            "name": "echo",
+            "dir": "/tmp",
+            "args": ["hello"],
+            "stdout": "hello",
+            "stderr": "",
+            "success": True,
+            "ttl": 300,
+        },
+        True,
+    ),
+    (
+        "roundtrip_via_key",
+        {
+            "type": "mcp",
+            "name": "fetch",
+            "dir": "/tmp",
+            "args": ["url"],
+            "stdout": "data",
+            "stderr": "",
+            "success": True,
+            "ttl": 300,
+        },
+        True,
+    ),
+]
+
+
+@pytest.mark.parametrize("case_name,call_params,expect_success", TOOL_TEST_CASES)
+def test_server_tools_roundtrip(
+    test_config: Config, case_name: str, call_params: dict, expect_success: bool
+) -> None:
+    server = create_mcp_server(test_config)
+    now = int(time.time())
+
+    # 1. Call set via call_tool
+    set_args: dict[str, Any] = {
+        "type": call_params["type"],
+        "name": call_params["name"],
+        "dir": call_params["dir"],
+        "ttl": call_params["ttl"],
+        "stdout": call_params["stdout"],
+        "stderr": call_params["stderr"],
+        "success": call_params["success"],
+        "args": call_params["args"],
+    }
+    if case_name == "roundtrip_via_args":
+        set_args["start_timestamp"] = now - 1
+        set_args["end_timestamp"] = now
+    set_call_res = anyio.run(server.call_tool, "set", set_args)
+    assert isinstance(set_call_res, CallToolResult)
+    assert set_call_res.is_error is False
+    set_res = set_call_res.structured_content
+    assert set_res is not None
+    assert set_res["success"] is expect_success
+    cache_key = set_res["key"]
+    assert cache_key is not None
+
+    # 2. Call exist via call_tool
+    if case_name == "roundtrip_via_key":
+        exist_args = {"key": cache_key}
+    else:
+        exist_args = {
+            "type": call_params["type"],
+            "name": call_params["name"],
+            "dir": call_params["dir"],
+            "args": call_params["args"],
+        }
+    exist_call_res = anyio.run(server.call_tool, "exist", exist_args)
+    assert isinstance(exist_call_res, CallToolResult)
+    assert exist_call_res.is_error is False
+    assert exist_call_res.structured_content is not None
+    assert exist_call_res.structured_content["hit"] is True
+
+    # 3. Call get via call_tool
+    if case_name == "roundtrip_via_key":
+        get_args = {"key": cache_key}
+    else:
+        get_args = {
+            "type": call_params["type"],
+            "name": call_params["name"],
+            "dir": call_params["dir"],
+            "args": call_params["args"],
+        }
+    get_call_res = anyio.run(server.call_tool, "get", get_args)
+    assert isinstance(get_call_res, CallToolResult)
+    assert get_call_res.is_error is False
+    assert get_call_res.structured_content is not None
+    assert get_call_res.structured_content["hit"] is True
+    assert get_call_res.structured_content["data"]["stdout"] == call_params["stdout"]
+
+    # 4. Call delete via call_tool
+    del_call_res = anyio.run(server.call_tool, "delete", {"key": cache_key})
+    assert isinstance(del_call_res, CallToolResult)
+    assert del_call_res.is_error is False
+    assert del_call_res.structured_content is not None
+    assert del_call_res.structured_content["hit"] is True
+    assert del_call_res.structured_content["deleted"] is True
+
+    # 5. Verify deleted via call_tool
+    exist_after_call = anyio.run(server.call_tool, "exist", {"key": cache_key})
+    assert isinstance(exist_after_call, CallToolResult)
+    assert exist_after_call.structured_content is not None
+    assert exist_after_call.structured_content["hit"] is False
+
+
+def test_server_purge_tool(test_config: Config) -> None:
+    server = create_mcp_server(test_config)
+    now = int(time.time())
+
+    anyio.run(
+        server.call_tool,
+        "set",
+        {
+            "type": "cmd",
+            "name": "test",
+            "dir": "/tmp",
+            "start_timestamp": now - 1,
+            "end_timestamp": now,
+            "ttl": 300,
+            "stdout": "out",
+            "stderr": "",
+            "success": True,
+        },
+    )
+
+    purge_call_res = anyio.run(server.call_tool, "purge", {})
+    assert isinstance(purge_call_res, CallToolResult)
+    assert purge_call_res.is_error is False
+    assert purge_call_res.structured_content is not None
+    assert purge_call_res.structured_content["success"] is True
+    assert purge_call_res.structured_content["deleted_count"] == 1
+    assert purge_call_res.structured_content["freed_bytes"] > 0
