@@ -164,3 +164,44 @@ def test_cli_set_with_json_payload(tmp_path: Path, capsys) -> None:
     get_res = json.loads(captured.out)
     assert get_res["hit"] is True
     assert get_res["data"]["stdout"] == "clean"
+
+
+def test_cli_set_with_long_json_payload_and_file(tmp_path: Path, capsys) -> None:
+    import time
+
+    now = int(time.time())
+    cache_dir = str(tmp_path / "cli_cache_long_json")
+
+    # Long payload > 300 bytes (exceeds single POSIX filename component limits if treated as path)
+    long_stdout = "x" * 500
+    payload = {
+        "type": "command",
+        "name": "big_output",
+        "dir": "/tmp",
+        "args": ["run", "--flag", "val"],
+        "created_timestamp": now,
+        "ttl": 300,
+        "ttl_timestamp": now + 300,
+        "stdout": long_stdout,
+        "stderr": "",
+        "success": True,
+    }
+    json_str = json.dumps(payload)
+    assert len(json_str) > 500
+
+    # 1. Direct string should succeed without OSError
+    code = cli(["set", "--dir", cache_dir, "--json", json_str])
+    assert code == 0
+    captured = capsys.readouterr()
+    res = json.loads(captured.out)
+    assert res["success"] is True
+
+    # 2. File path should also succeed
+    file_path = tmp_path / "payload.json"
+    file_path.write_text(json_str, encoding="utf-8")
+    code2 = cli(["set", "--dir", cache_dir, "--json", str(file_path)])
+    assert code2 == 0
+    captured = capsys.readouterr()
+    res2 = json.loads(captured.out)
+    assert res2["success"] is True
+    assert res2["version"] == 2

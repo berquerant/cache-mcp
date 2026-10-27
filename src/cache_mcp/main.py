@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,22 @@ def _resolve_key(
             stdin=stdin,
         )
     return None
+
+
+def _read_json_payload(input_spec: str) -> str:
+    """Read JSON payload from stdin ('-'), a file path, or direct JSON string."""
+    if input_spec == "-":
+        return sys.stdin.read()
+    stripped = input_spec.strip()
+    if stripped.startswith(("{", "[")):
+        return input_spec
+    try:
+        p = Path(input_spec)
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return input_spec
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -380,20 +397,10 @@ def cli(argv: list[str] | None = None) -> int:
             storage = CacheStorage(config)
             entry: CacheEntry
             key: str
-            import time
-
             now = int(time.time())
 
             if args.json_input:
-                raw_json = (
-                    sys.stdin.read()
-                    if args.json_input == "-"
-                    else (
-                        Path(args.json_input).read_text(encoding="utf-8")
-                        if Path(args.json_input).exists()
-                        else args.json_input
-                    )
-                )
+                raw_json = _read_json_payload(args.json_input)
                 data = json.loads(raw_json)
                 key = args.key or data.get("key")
                 if not key:
