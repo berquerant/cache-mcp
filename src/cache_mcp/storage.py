@@ -185,6 +185,59 @@ class CacheStorage:
                 valid.append(item)
         return valid, expired
 
+    def _find_target_file(
+        self,
+        target_ver: int | str | None,
+        valid_files: list[tuple[Path, int, int, int, int]],
+        expired_files: list[tuple[Path, int, int, int, int]],
+    ) -> tuple[tuple[Path, int, int, int, int] | None, str | None]:
+        if target_ver is None or target_ver == "latest":
+            if not valid_files:
+                return None, "expired"
+            valid_files.sort(key=lambda x: x[3], reverse=True)
+            return valid_files[0], None
+
+        assert isinstance(target_ver, int)
+        for item in valid_files:
+            if item[3] == target_ver:
+                return item, None
+        for item in expired_files:
+            if item[3] == target_ver:
+                return None, "expired"
+        return None, "miss"
+
+    def _read_and_decompress(
+        self, target_path: Path, resolved_key_str: str, resolved_ver: int
+    ) -> GetResult:
+        try:
+            compressed_data = target_path.read_bytes()
+            decompressed_data = zstd.decompress(compressed_data)
+            entry = CacheEntry.model_validate_json(decompressed_data.decode("utf-8"))
+            return GetResult(
+                hit=True, key=resolved_key_str, version=resolved_ver, data=entry
+            )
+        except (zstd.ZstdError, ValidationError, UnicodeDecodeError) as e:
+            return GetResult(
+                hit=False,
+                key=resolved_key_str,
+                version=resolved_ver,
+                reason=f"corrupt: {e}",
+            )
+        except OSError as e:
+            return GetResult(
+                hit=False,
+                key=resolved_key_str,
+                version=resolved_ver,
+                reason=f"io_error: {e}",
+            )
+        except Exception as e:
+            return GetResult(
+                hit=False,
+                key=resolved_key_str,
+                version=resolved_ver,
+                reason=f"unknown_error: {e}",
+            )
+
     def get(self, key: str, version: int | str | None = None) -> GetResult:
         """Retrieve and decompress cached record by key and optional version.
 
@@ -220,76 +273,22 @@ class CacheStorage:
                     reason="miss",
                 )
 
-            # Resolve target file
-            target_file: tuple[Path, int, int, int, int] | None = None
-            if target_ver is None or target_ver == "latest":
-                if not valid_files:
-                    return GetResult(
-                        hit=False,
-                        key=format_versioned_key(base_key, target_ver),
-                        reason="expired",
-                    )
-                # Pick latest version
-                valid_files.sort(key=lambda x: x[3], reverse=True)
-                target_file = valid_files[0]
-            else:
-                # Specific integer version
-                assert isinstance(target_ver, int)
-                for item in valid_files:
-                    if item[3] == target_ver:
-                        target_file = item
-                        break
-                if target_file is None:
-                    # Check if it was among expired
-                    for item in expired_files:
-                        if item[3] == target_ver:
-                            return GetResult(
-                                hit=False,
-                                key=format_versioned_key(base_key, target_ver),
-                                version=target_ver,
-                                reason="expired",
-                            )
-                    return GetResult(
-                        hit=False,
-                        key=format_versioned_key(base_key, target_ver),
-                        version=target_ver,
-                        reason="miss",
-                    )
+            target_file, reason = self._find_target_file(
+                target_ver, valid_files, expired_files
+            )
+            if target_file is None:
+                return GetResult(
+                    hit=False,
+                    key=format_versioned_key(base_key, target_ver),
+                    version=target_ver if isinstance(target_ver, int) else None,
+                    reason=reason,
+                )
 
             target_path, _, _, resolved_ver, _ = target_file
             resolved_key_str = format_versioned_key(base_key, resolved_ver)
-
-            # Read and decompress
-            try:
-                compressed_data = target_path.read_bytes()
-                decompressed_data = zstd.decompress(compressed_data)
-                entry = CacheEntry.model_validate_json(
-                    decompressed_data.decode("utf-8")
-                )
-                return GetResult(
-                    hit=True, key=resolved_key_str, version=resolved_ver, data=entry
-                )
-            except (zstd.ZstdError, ValidationError, UnicodeDecodeError) as e:
-                return GetResult(
-                    hit=False,
-                    key=resolved_key_str,
-                    version=resolved_ver,
-                    reason=f"corrupt: {e}",
-                )
-            except OSError as e:
-                return GetResult(
-                    hit=False,
-                    key=resolved_key_str,
-                    version=resolved_ver,
-                    reason=f"io_error: {e}",
-                )
-            except Exception as e:
-                return GetResult(
-                    hit=False,
-                    key=resolved_key_str,
-                    version=resolved_ver,
-                    reason=f"unknown_error: {e}",
-                )
+            return self._read_and_decompress(
+                target_path, resolved_key_str, resolved_ver
+            )
 
     def exist(self, key: str, version: int | str | None = None) -> bool:
         """Check whether a non-expired cache entry exists for the given key and version.
@@ -316,6 +315,61 @@ class CacheStorage:
                 return len(valid_files) > 0
             return any(item[3] == target_ver for item in valid_files)
 
+    def _delete_all_versions(
+        self, base_key: str, files: list[tuple[Path, int, int, int, int]]
+    ) -> DeleteResult:
+        deleted_count = sum(
+            1 for p, _, _, _, sz in files if self._unlink_and_deduct(p, sz)
+        )
+        return DeleteResult(
+            hit=True,
+            deleted=deleted_count > 0,
+            key=base_key,
+            version=None,
+            deleted_count=deleted_count,
+        )
+
+    def _delete_latest_version(
+        self, base_key: str, files: list[tuple[Path, int, int, int, int]]
+    ) -> DeleteResult:
+        files.sort(key=lambda x: x[3], reverse=True)
+        latest_p, _, _, latest_v, sz = files[0]
+        deleted = self._unlink_and_deduct(latest_p, sz)
+        return DeleteResult(
+            hit=True,
+            deleted=deleted,
+            key=format_versioned_key(base_key, latest_v),
+            version=latest_v,
+            deleted_count=1 if deleted else 0,
+        )
+
+    def _delete_specific_version(
+        self,
+        base_key: str,
+        files: list[tuple[Path, int, int, int, int]],
+        target_ver: int,
+    ) -> DeleteResult:
+        target_files = [f for f in files if f[3] == target_ver]
+        target_key_str = format_versioned_key(base_key, target_ver)
+        if not target_files:
+            return DeleteResult(
+                hit=False,
+                deleted=False,
+                key=target_key_str,
+                version=target_ver,
+                deleted_count=0,
+            )
+        deleted_count = sum(
+            1 for p, _, _, _, sz in target_files if self._unlink_and_deduct(p, sz)
+        )
+        return DeleteResult(
+            hit=True,
+            deleted=deleted_count > 0,
+            key=target_key_str,
+            version=target_ver,
+            deleted_count=deleted_count,
+        )
+
     def delete(self, key: str, version: int | str | None = None) -> DeleteResult:
         """Delete cache files for a key.
 
@@ -337,65 +391,23 @@ class CacheStorage:
         with self.lock:
             files = self._find_files_by_key(base_key)
             if not files:
-                target_key_str = format_versioned_key(base_key, target_ver)
                 return DeleteResult(
                     hit=False,
                     deleted=False,
-                    key=target_key_str,
-                    version=target_ver,
+                    key=format_versioned_key(base_key, target_ver),
+                    version=target_ver if isinstance(target_ver, int) else None,
                     deleted_count=0,
                 )
 
-            if target_ver is None:
-                # Delete all versions
-                deleted_count = 0
-                for p, _, _, _, sz in files:
-                    if self._unlink_and_deduct(p, sz):
-                        deleted_count += 1
-                return DeleteResult(
-                    hit=True,
-                    deleted=deleted_count > 0,
-                    key=base_key,
-                    version=None,
-                    deleted_count=deleted_count,
-                )
-            elif target_ver == "latest":
-                # Delete highest version
-                files.sort(key=lambda x: x[3], reverse=True)
-                latest_p, _, _, latest_v, sz = files[0]
-                deleted = self._unlink_and_deduct(latest_p, sz)
-                target_key_str = format_versioned_key(base_key, latest_v)
-                return DeleteResult(
-                    hit=True,
-                    deleted=deleted,
-                    key=target_key_str,
-                    version=latest_v,
-                    deleted_count=1 if deleted else 0,
-                )
-            else:
-                # Delete specific version
-                target_files = [f for f in files if f[3] == target_ver]
-                if not target_files:
-                    target_key_str = format_versioned_key(base_key, target_ver)
-                    return DeleteResult(
-                        hit=False,
-                        deleted=False,
-                        key=target_key_str,
-                        version=target_ver,
-                        deleted_count=0,
-                    )
-                deleted_count = 0
-                for p, _, _, _, sz in target_files:
-                    if self._unlink_and_deduct(p, sz):
-                        deleted_count += 1
-                target_key_str = format_versioned_key(base_key, target_ver)
-                return DeleteResult(
-                    hit=True,
-                    deleted=deleted_count > 0,
-                    key=target_key_str,
-                    version=target_ver,
-                    deleted_count=deleted_count,
-                )
+            match target_ver:
+                case None:
+                    return self._delete_all_versions(base_key, files)
+                case "latest":
+                    return self._delete_latest_version(base_key, files)
+                case int() as v:
+                    return self._delete_specific_version(base_key, files, v)
+                case _:
+                    return DeleteResult(hit=False, deleted=False, key=key)
 
     def version(self, key: str) -> VersionResult:
         """List all valid, non-expired versions for the given key without reading payloads."""
@@ -471,6 +483,77 @@ class CacheStorage:
                 all=all,
             )
 
+    def _ensure_capacity(self, new_size: int, now: int) -> bool:
+        if (
+            self._total_compressed_size + new_size
+            <= self.config.max_total_compressed_cache_size
+        ):
+            return True
+
+        # Evict expired files across all keys
+        all_files: list[tuple[Path, int, int, int, int]] = []
+        for p in self.root_dir.glob("*/*.zst"):
+            if p.is_file() and not p.name.startswith(".tmp_"):
+                info = self._parse_cache_file_info(p)
+                if info is not None:
+                    _, created_ts, ttl_ts, ver, sz = info
+                    if ttl_ts <= now:
+                        self._unlink_and_deduct(p, sz)
+                    else:
+                        all_files.append((p, created_ts, ttl_ts, ver, sz))
+
+        # FIFO Eviction if still over capacity
+        if (
+            self._total_compressed_size + new_size
+            > self.config.max_total_compressed_cache_size
+        ):
+            all_files.sort(key=lambda x: x[1])
+            for p, _, _, _, sz in all_files:
+                self._unlink_and_deduct(p, sz)
+                if (
+                    self._total_compressed_size + new_size
+                    <= self.config.max_total_compressed_cache_size
+                ):
+                    break
+
+        return (
+            self._total_compressed_size + new_size
+            <= self.config.max_total_compressed_cache_size
+        )
+
+    def _write_entry_file(
+        self,
+        base_key: str,
+        entry: CacheEntry,
+        new_version: int,
+        compressed_bytes: bytes,
+        new_size: int,
+    ) -> StorageResult:
+        sub_dir = self._get_sub_dir(base_key)
+        target_path = (
+            sub_dir
+            / f"{base_key}_{entry.created_timestamp}_{entry.ttl_timestamp}_{new_version}.zst"
+        )
+        tmp_path = sub_dir / f".tmp_{os.getpid()}_{uuid.uuid4().hex}.zst"
+
+        try:
+            tmp_path.write_bytes(compressed_bytes)
+            tmp_path.replace(target_path)
+            self._total_compressed_size += new_size
+            versioned_key_str = format_versioned_key(base_key, new_version)
+            return StorageResult(
+                success=True, key=versioned_key_str, version=new_version
+            )
+        except Exception as e:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            return StorageResult(
+                success=False,
+                key=base_key,
+                version=new_version,
+                message=f"Failed to write file: {e}",
+            )
+
     def set(self, key: str, entry: CacheEntry) -> StorageResult:
         """Compress and append a new immutable version of a cache entry.
 
@@ -511,71 +594,14 @@ class CacheStorage:
             self._find_and_clean_files(base_key, now)
 
             # Check total capacity & evict if necessary
-            if (
-                self._total_compressed_size + new_size
-                > self.config.max_total_compressed_cache_size
-            ):
-                # Step A: Evict expired files across all keys
-                all_files: list[tuple[Path, int, int, int, int]] = []
-                for p in self.root_dir.glob("*/*.zst"):
-                    if p.is_file() and not p.name.startswith(".tmp_"):
-                        info = self._parse_cache_file_info(p)
-                        if info is not None:
-                            _, created_ts, ttl_ts, ver, sz = info
-                            if ttl_ts <= now:
-                                self._unlink_and_deduct(p, sz)
-                            else:
-                                all_files.append((p, created_ts, ttl_ts, ver, sz))
-
-                # Step B: FIFO Eviction if still over capacity
-                if (
-                    self._total_compressed_size + new_size
-                    > self.config.max_total_compressed_cache_size
-                ):
-                    # Sort by created_timestamp ascending (oldest first)
-                    all_files.sort(key=lambda x: x[1])
-                    for p, _, _, _, sz in all_files:
-                        self._unlink_and_deduct(p, sz)
-                        if (
-                            self._total_compressed_size + new_size
-                            <= self.config.max_total_compressed_cache_size
-                        ):
-                            break
-
-                # If STILL exceeding after evicting everything
-                if (
-                    self._total_compressed_size + new_size
-                    > self.config.max_total_compressed_cache_size
-                ):
-                    return StorageResult(
-                        success=False,
-                        key=base_key,
-                        version=new_version,
-                        message="Storage quota exceeded (max_total_compressed_cache_size)",
-                    )
-
-            # Atomic write via temporary file in the same directory
-            sub_dir = self._get_sub_dir(base_key)
-            target_path = (
-                sub_dir
-                / f"{base_key}_{entry.created_timestamp}_{entry.ttl_timestamp}_{new_version}.zst"
-            )
-            tmp_path = sub_dir / f".tmp_{os.getpid()}_{uuid.uuid4().hex}.zst"
-
-            try:
-                tmp_path.write_bytes(compressed_bytes)
-                tmp_path.replace(target_path)
-                self._total_compressed_size += new_size
-                versioned_key_str = format_versioned_key(base_key, new_version)
-                return StorageResult(
-                    success=True, key=versioned_key_str, version=new_version
-                )
-            except Exception as e:
-                if tmp_path.exists():
-                    tmp_path.unlink(missing_ok=True)
+            if not self._ensure_capacity(new_size, now):
                 return StorageResult(
                     success=False,
                     key=base_key,
                     version=new_version,
-                    message=f"Failed to write file: {e}",
+                    message="Storage quota exceeded (max_total_compressed_cache_size)",
                 )
+
+            return self._write_entry_file(
+                base_key, entry, new_version, compressed_bytes, new_size
+            )

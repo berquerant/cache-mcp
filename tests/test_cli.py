@@ -4,7 +4,7 @@ from pathlib import Path
 from cache_mcp.main import cli
 
 
-def test_cli_set_get_exist_version_delete_purge_flow(tmp_path: Path, capsys) -> None:
+def test_cli_set_get_exist_version_flow(tmp_path: Path, capsys) -> None:
     cache_dir = str(tmp_path / "cli_cache")
 
     # 1. Set v1
@@ -91,6 +91,47 @@ def test_cli_set_get_exist_version_delete_purge_flow(tmp_path: Path, capsys) -> 
     assert code == 1
     captured = capsys.readouterr()
     assert json.loads(captured.out)["hit"] is False
+
+
+def test_cli_delete_and_purge_flow(tmp_path: Path, capsys) -> None:
+    cache_dir = str(tmp_path / "cli_cache_del")
+
+    # Set v1 and v2
+    cli(
+        [
+            "set",
+            "--dir",
+            cache_dir,
+            "--type",
+            "cmd",
+            "--name",
+            "date",
+            "--cmd-dir",
+            "/tmp",
+            "--stdout",
+            "2026-01-01",
+        ]
+    )
+    captured = capsys.readouterr()
+    res = json.loads(captured.out)
+    base_key = res["key"].split("@")[0]
+
+    cli(
+        [
+            "set",
+            "--dir",
+            cache_dir,
+            "--type",
+            "cmd",
+            "--name",
+            "date",
+            "--cmd-dir",
+            "/tmp",
+            "--stdout",
+            "2026-01-02",
+        ]
+    )
+    capsys.readouterr()
 
     # 8. Delete specific version 1
     code = cli(["delete", "--dir", cache_dir, "--key", base_key, "--version", "1"])

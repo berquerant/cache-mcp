@@ -7,12 +7,7 @@ from cache_mcp.models import Config
 from cache_mcp.service import CacheService
 
 
-def create_mcp_server(config: Config) -> MCPServer:
-    """Creates and configures MCPServer with 6 cache tools: get, set, exist, delete, version, purge."""
-    mcp = MCPServer("cachemcp")
-    logger = CacheMCPLogger(config.dir / "logs")
-    service = CacheService(config=config, logger=logger)
-
+def _register_read_tools(mcp: MCPServer, service: CacheService) -> None:
     @mcp.tool()
     def get(
         key: str | None = None,
@@ -42,6 +37,56 @@ def create_mcp_server(config: Config) -> MCPServer:
             stdin=stdin,
         )
 
+    @mcp.tool()
+    def exist(
+        key: str | None = None,
+        version: int | str | None = None,
+        type: str | None = None,
+        name: str | None = None,
+        args: list[str] | None = None,
+        dir: str | None = None,
+        stdin: str | None = None,
+    ) -> dict[str, Any]:
+        """Check whether a valid (unexpired) cache entry exists.
+
+        Returns:
+            Dictionary with `hit: bool` and `key: str`.
+        """
+        return service.exist(
+            key=key,
+            version=version,
+            type=type,
+            name=name,
+            args=args,
+            dir=dir,
+            stdin=stdin,
+        )
+
+    @mcp.tool()
+    def version(
+        key: str | None = None,
+        type: str | None = None,
+        name: str | None = None,
+        args: list[str] | None = None,
+        dir: str | None = None,
+        stdin: str | None = None,
+    ) -> dict[str, Any]:
+        """List all existing, non-expired versions for a cache key without decompressing contents.
+
+        Returns:
+            Dictionary with `hit: bool`, `key: str`, and `versions: list[dict]`.
+        """
+        return service.version(
+            key=key,
+            type=type,
+            name=name,
+            args=args,
+            dir=dir,
+            stdin=stdin,
+        )
+
+
+def _register_write_tools(mcp: MCPServer, service: CacheService) -> None:
     @mcp.tool()
     def set(
         type: str,
@@ -88,31 +133,6 @@ def create_mcp_server(config: Config) -> MCPServer:
         )
 
     @mcp.tool()
-    def exist(
-        key: str | None = None,
-        version: int | str | None = None,
-        type: str | None = None,
-        name: str | None = None,
-        args: list[str] | None = None,
-        dir: str | None = None,
-        stdin: str | None = None,
-    ) -> dict[str, Any]:
-        """Check whether a valid (unexpired) cache entry exists.
-
-        Returns:
-            Dictionary with `hit: bool` and `key: str`.
-        """
-        return service.exist(
-            key=key,
-            version=version,
-            type=type,
-            name=name,
-            args=args,
-            dir=dir,
-            stdin=stdin,
-        )
-
-    @mcp.tool()
     def delete(
         key: str | None = None,
         version: int | str | None = None,
@@ -139,29 +159,6 @@ def create_mcp_server(config: Config) -> MCPServer:
         )
 
     @mcp.tool()
-    def version(
-        key: str | None = None,
-        type: str | None = None,
-        name: str | None = None,
-        args: list[str] | None = None,
-        dir: str | None = None,
-        stdin: str | None = None,
-    ) -> dict[str, Any]:
-        """List all existing, non-expired versions for a cache key without decompressing contents.
-
-        Returns:
-            Dictionary with `hit: bool`, `key: str`, and `versions: list[dict]`.
-        """
-        return service.version(
-            key=key,
-            type=type,
-            name=name,
-            args=args,
-            dir=dir,
-            stdin=stdin,
-        )
-
-    @mcp.tool()
     def purge(all: bool = False) -> dict[str, Any]:
         """Purge cache files across all subdirectories and reclaim disk space.
 
@@ -174,4 +171,12 @@ def create_mcp_server(config: Config) -> MCPServer:
         """
         return service.purge(all=all)
 
+
+def create_mcp_server(config: Config) -> MCPServer:
+    """Creates and configures MCPServer with 6 cache tools: get, set, exist, delete, version, purge."""
+    mcp = MCPServer("cachemcp")
+    logger = CacheMCPLogger(config.dir / "logs")
+    service = CacheService(config=config, logger=logger)
+    _register_read_tools(mcp, service)
+    _register_write_tools(mcp, service)
     return mcp
