@@ -205,3 +205,57 @@ def test_cli_set_with_long_json_payload_and_file(tmp_path: Path, capsys) -> None
     res2 = json.loads(captured.out)
     assert res2["success"] is True
     assert res2["version"] == 2
+
+
+def test_cli_logging(tmp_path: Path, capsys) -> None:
+    cache_dir = tmp_path / "cli_cache_logging"
+    log_file = cache_dir / "logs" / "cachemcp.log"
+
+    # 1. Run command with default logging
+    code = cli(
+        [
+            "set",
+            "--dir",
+            str(cache_dir),
+            "--type",
+            "cmd",
+            "--name",
+            "echo",
+            "--cmd-dir",
+            "/tmp",
+            "--stdout",
+            "logged",
+        ]
+    )
+    assert code == 0
+    capsys.readouterr()
+
+    assert log_file.exists()
+    content = log_file.read_text(encoding="utf-8").strip()
+    assert len(content) > 0
+    record = json.loads(content.splitlines()[-1])
+    assert record["tool"] == "set"
+    assert "duration_ms" in record
+
+    # 2. Run command with --no-log
+    line_count_before = len(content.splitlines())
+    code_no_log = cli(
+        [
+            "--no-log",
+            "exist",
+            "--dir",
+            str(cache_dir),
+            "--type",
+            "cmd",
+            "--name",
+            "echo",
+            "--cmd-dir",
+            "/tmp",
+        ]
+    )
+    assert code_no_log == 0
+    capsys.readouterr()
+
+    content_after = log_file.read_text(encoding="utf-8").strip()
+    line_count_after = len(content_after.splitlines())
+    assert line_count_after == line_count_before

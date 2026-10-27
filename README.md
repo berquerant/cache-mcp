@@ -164,7 +164,7 @@ Deletes all cached files across all subdirectories and resets the in-memory size
 
 ## Command-Line Interface (CLI)
 
-`cache-mcp` provides a full CLI corresponding to the MCP tools, returning structured JSON on stdout with standard exit codes (0 for hit/success, 1 for miss/not found, 2 for error):
+`cache-mcp` provides a full CLI corresponding to the MCP tools, returning structured JSON on stdout with standard exit codes (0 for hit/success, 1 for miss/not found, 2 for error). By default, all CLI executions write rotating JSONL audit logs to `<dir>/logs/cachemcp.log` (use `--no-log` to disable logging):
 
 ```bash
 # Start MCP STDIO Server (default if subcommand is omitted)
@@ -172,6 +172,9 @@ cache-mcp server --dir ~/.cache/cachemcp
 
 # Store cache entry
 cache-mcp set --dir ~/.cache/cachemcp --type command --name git --cmd-dir $(pwd) --args status --stdout "clean"
+
+# Disable audit logging with --no-log
+cache-mcp set --dir ~/.cache/cachemcp --no-log --type command --name git --cmd-dir $(pwd) --args status --stdout "clean"
 
 # Store via JSON string or file
 cache-mcp set --dir ~/.cache/cachemcp --json '{"type": "command", "name": "test", "dir": "/tmp", "stdout": "ok", "stderr": "", "success": true, "ttl": 300, "created_timestamp": 1776000000, "ttl_timestamp": 1776000300}'

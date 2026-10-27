@@ -29,3 +29,6 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local cache directories
+.cachemcp/

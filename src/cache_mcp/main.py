@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from cache_mcp.logger import CacheMCPLogger
 from cache_mcp.models import CacheEntry, Config, compute_cache_key
 from cache_mcp.server import create_mcp_server
 from cache_mcp.storage import CacheStorage
@@ -49,8 +50,8 @@ def _read_json_payload(input_spec: str) -> str:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    common_parent = argparse.ArgumentParser(add_help=False)
-    common_parent.add_argument(
+    common_root = argparse.ArgumentParser(add_help=False)
+    common_root.add_argument(
         "--dir",
         "--cache-dir",
         dest="cache_dir",
@@ -58,39 +59,79 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path(os.environ.get("CACHE_MCP_DIR", ".cachemcp")),
         help="Root cache storage directory (default: env CACHE_MCP_DIR or .cachemcp)",
     )
-    common_parent.add_argument(
+    common_root.add_argument(
         "--max-ttl", type=int, default=1800, help="Maximum allowed TTL in seconds"
     )
-    common_parent.add_argument(
+    common_root.add_argument(
         "--max-cache-size",
         type=int,
         default=10 * 1024 * 1024,
         help="Max uncompressed cache entry size",
     )
-    common_parent.add_argument(
+    common_root.add_argument(
         "--max-total-compressed-cache-size",
         type=int,
         default=500 * 1024 * 1024,
         help="Max total compressed cache size",
     )
+    common_root.add_argument(
+        "--no-log",
+        action="store_true",
+        default=False,
+        help="Disable writing execution audit records to logs/cachemcp.log",
+    )
+
+    common_sub = argparse.ArgumentParser(add_help=False)
+    common_sub.add_argument(
+        "--dir",
+        "--cache-dir",
+        dest="cache_dir",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Root cache storage directory",
+    )
+    common_sub.add_argument(
+        "--max-ttl",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Maximum allowed TTL in seconds",
+    )
+    common_sub.add_argument(
+        "--max-cache-size",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Max uncompressed cache entry size",
+    )
+    common_sub.add_argument(
+        "--max-total-compressed-cache-size",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Max total compressed cache size",
+    )
+    common_sub.add_argument(
+        "--no-log",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable writing execution audit records to logs/cachemcp.log",
+    )
 
     parser = argparse.ArgumentParser(
         description="Cache MCP Server & Command-Line Interface",
-        parents=[common_parent],
+        parents=[common_root],
     )
     subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
 
     # server
     subparsers.add_parser(
         "server",
-        parents=[common_parent],
+        parents=[common_sub],
         help="Run MCP server over STDIO transport",
     )
 
     # get
     get_parser = subparsers.add_parser(
         "get",
-        parents=[common_parent],
+        parents=[common_sub],
         help="Retrieve cache entry by key or command parameters",
     )
     get_parser.add_argument(
@@ -114,7 +155,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # exist
     exist_parser = subparsers.add_parser(
         "exist",
-        parents=[common_parent],
+        parents=[common_sub],
         help="Check if cache entry exists without decompressing",
     )
     exist_parser.add_argument(
@@ -138,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # delete
     del_parser = subparsers.add_parser(
         "delete",
-        parents=[common_parent],
+        parents=[common_sub],
         help="Delete cache entry (all versions or specific version)",
     )
     del_parser.add_argument(
@@ -162,7 +203,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # version
     ver_parser = subparsers.add_parser(
         "version",
-        parents=[common_parent],
+        parents=[common_sub],
         help="List all existing versions for a key",
     )
     ver_parser.add_argument("--key", type=str, help="Base cache key")
@@ -181,7 +222,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # set
     set_parser = subparsers.add_parser(
         "set",
-        parents=[common_parent],
+        parents=[common_sub],
         help="Store a new immutable version of a cache entry",
     )
     set_parser.add_argument(
@@ -231,7 +272,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # purge
     subparsers.add_parser(
         "purge",
-        parents=[common_parent],
+        parents=[common_sub],
         help="Purge all caches and reset size ledger",
     )
 
@@ -256,6 +297,9 @@ def cli(argv: list[str] | None = None) -> int:
         max_cache_size=args.max_cache_size,
         max_total_compressed_cache_size=args.max_total_compressed_cache_size,
     )
+    logger = (
+        None if getattr(args, "no_log", False) else CacheMCPLogger(config.dir / "logs")
+    )
 
     match args.subcommand:
         case "server":
@@ -264,6 +308,7 @@ def cli(argv: list[str] | None = None) -> int:
             return 0
 
         case "get":
+            start = time.perf_counter()
             storage = CacheStorage(config)
             target_key = _resolve_key(
                 args.key,
@@ -274,15 +319,23 @@ def cli(argv: list[str] | None = None) -> int:
                 args.stdin,
             )
             if not target_key:
-                print(
-                    json.dumps(
+                err_output = {
+                    "hit": False,
+                    "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
+                }
+                print(json.dumps(err_output), file=sys.stderr)
+                if logger:
+                    logger.log_call(
+                        "get",
                         {
-                            "hit": False,
-                            "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
-                        }
-                    ),
-                    file=sys.stderr,
-                )
+                            "key": args.key,
+                            "type": args.type_name,
+                            "name": args.name,
+                            "dir": args.cmd_dir,
+                        },
+                        err_output,
+                        0,
+                    )
                 return 2
 
             res = storage.get(target_key, version=args.version)
@@ -294,10 +347,27 @@ def cli(argv: list[str] | None = None) -> int:
             }
             if res.reason:
                 output["reason"] = res.reason
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            if logger:
+                logger.log_call(
+                    "get",
+                    {
+                        "key": args.key,
+                        "version": args.version,
+                        "type": args.type_name,
+                        "name": args.name,
+                        "dir": args.cmd_dir,
+                        "args": args.args,
+                        "stdin": args.stdin,
+                    },
+                    output,
+                    duration_ms,
+                )
             print(json.dumps(output, indent=2, ensure_ascii=False))
             return 0 if res.hit else 1
 
         case "exist":
+            start = time.perf_counter()
             storage = CacheStorage(config)
             target_key = _resolve_key(
                 args.key,
@@ -308,26 +378,48 @@ def cli(argv: list[str] | None = None) -> int:
                 args.stdin,
             )
             if not target_key:
-                print(
-                    json.dumps(
+                err_output = {
+                    "hit": False,
+                    "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
+                }
+                print(json.dumps(err_output), file=sys.stderr)
+                if logger:
+                    logger.log_call(
+                        "exist",
                         {
-                            "hit": False,
-                            "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
-                        }
-                    ),
-                    file=sys.stderr,
-                )
+                            "key": args.key,
+                            "type": args.type_name,
+                            "name": args.name,
+                            "dir": args.cmd_dir,
+                        },
+                        err_output,
+                        0,
+                    )
                 return 2
 
             hit = storage.exist(target_key, version=args.version)
-            print(
-                json.dumps(
-                    {"hit": hit, "key": target_key}, indent=2, ensure_ascii=False
+            output = {"hit": hit, "key": target_key}
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            if logger:
+                logger.log_call(
+                    "exist",
+                    {
+                        "key": args.key,
+                        "version": args.version,
+                        "type": args.type_name,
+                        "name": args.name,
+                        "dir": args.cmd_dir,
+                        "args": args.args,
+                        "stdin": args.stdin,
+                    },
+                    output,
+                    duration_ms,
                 )
-            )
+            print(json.dumps(output, indent=2, ensure_ascii=False))
             return 0 if hit else 1
 
         case "delete":
+            start = time.perf_counter()
             storage = CacheStorage(config)
             target_key = _resolve_key(
                 args.key,
@@ -338,15 +430,23 @@ def cli(argv: list[str] | None = None) -> int:
                 args.stdin,
             )
             if not target_key:
-                print(
-                    json.dumps(
+                err_output = {
+                    "deleted": False,
+                    "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
+                }
+                print(json.dumps(err_output), file=sys.stderr)
+                if logger:
+                    logger.log_call(
+                        "delete",
                         {
-                            "deleted": False,
-                            "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
-                        }
-                    ),
-                    file=sys.stderr,
-                )
+                            "key": args.key,
+                            "type": args.type_name,
+                            "name": args.name,
+                            "dir": args.cmd_dir,
+                        },
+                        err_output,
+                        0,
+                    )
                 return 2
 
             del_res = storage.delete(target_key, version=args.version)
@@ -357,10 +457,27 @@ def cli(argv: list[str] | None = None) -> int:
                 "version": del_res.version,
                 "deleted_count": del_res.deleted_count,
             }
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            if logger:
+                logger.log_call(
+                    "delete",
+                    {
+                        "key": args.key,
+                        "version": args.version,
+                        "type": args.type_name,
+                        "name": args.name,
+                        "dir": args.cmd_dir,
+                        "args": args.args,
+                        "stdin": args.stdin,
+                    },
+                    output,
+                    duration_ms,
+                )
             print(json.dumps(output, indent=2, ensure_ascii=False))
             return 0 if del_res.deleted else 1
 
         case "version":
+            start = time.perf_counter()
             storage = CacheStorage(config)
             target_key = _resolve_key(
                 args.key,
@@ -371,15 +488,23 @@ def cli(argv: list[str] | None = None) -> int:
                 args.stdin,
             )
             if not target_key:
-                print(
-                    json.dumps(
+                err_output = {
+                    "hit": False,
+                    "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
+                }
+                print(json.dumps(err_output), file=sys.stderr)
+                if logger:
+                    logger.log_call(
+                        "version",
                         {
-                            "hit": False,
-                            "error": "Either --key or (--type, --name, --cmd-dir) must be provided",
-                        }
-                    ),
-                    file=sys.stderr,
-                )
+                            "key": args.key,
+                            "type": args.type_name,
+                            "name": args.name,
+                            "dir": args.cmd_dir,
+                        },
+                        err_output,
+                        0,
+                    )
                 return 2
 
             ver_res = storage.version(target_key)
@@ -390,10 +515,26 @@ def cli(argv: list[str] | None = None) -> int:
             }
             if ver_res.reason:
                 output["reason"] = ver_res.reason
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            if logger:
+                logger.log_call(
+                    "version",
+                    {
+                        "key": args.key,
+                        "type": args.type_name,
+                        "name": args.name,
+                        "dir": args.cmd_dir,
+                        "args": args.args,
+                        "stdin": args.stdin,
+                    },
+                    output,
+                    duration_ms,
+                )
             print(json.dumps(output, indent=2, ensure_ascii=False))
             return 0 if ver_res.hit else 1
 
         case "set":
+            start = time.perf_counter()
             storage = CacheStorage(config)
             entry: CacheEntry
             key: str
@@ -415,15 +556,13 @@ def cli(argv: list[str] | None = None) -> int:
             else:
                 if not (args.type_name and args.name and args.cmd_dir):
                     if not args.key:
-                        print(
-                            json.dumps(
-                                {
-                                    "success": False,
-                                    "error": "Must provide either --json or (--type, --name, --cmd-dir)",
-                                }
-                            ),
-                            file=sys.stderr,
-                        )
+                        err_output = {
+                            "success": False,
+                            "error": "Must provide either --json or (--type, --name, --cmd-dir)",
+                        }
+                        print(json.dumps(err_output), file=sys.stderr)
+                        if logger:
+                            logger.log_call("set", {}, err_output, 0)
                         return 2
                     key = args.key
                     type_name = "cli"
@@ -466,10 +605,30 @@ def cli(argv: list[str] | None = None) -> int:
                 "version": set_res.version,
                 "message": set_res.message,
             }
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            if logger:
+                logger.log_call(
+                    "set",
+                    {
+                        "key": key,
+                        "type": entry.type,
+                        "name": entry.name,
+                        "dir": entry.dir,
+                        "args": entry.args,
+                        "stdin": entry.stdin,
+                        "stdout": entry.stdout,
+                        "stderr": entry.stderr,
+                        "success": entry.success,
+                        "ttl": entry.ttl,
+                    },
+                    output,
+                    duration_ms,
+                )
             print(json.dumps(output, indent=2, ensure_ascii=False))
             return 0 if set_res.success else 1
 
         case "purge":
+            start = time.perf_counter()
             storage = CacheStorage(config)
             p_res = storage.purge()
             output = {
@@ -478,6 +637,9 @@ def cli(argv: list[str] | None = None) -> int:
                 "freed_bytes": p_res.freed_bytes,
                 "message": p_res.message,
             }
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            if logger:
+                logger.log_call("purge", {}, output, duration_ms)
             print(json.dumps(output, indent=2, ensure_ascii=False))
             return 0 if p_res.success else 1
 
