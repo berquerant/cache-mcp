@@ -171,15 +171,23 @@ def test_purge(tmp_path: Path) -> None:
         max_total_compressed_cache_size=1024 * 1024,
     )
     storage = CacheStorage(config)
-    storage.set("p1", make_entry())
-    storage.set("p2", make_entry())
+    storage.set("p1_key", make_entry())
+    storage.set("p2_key", make_entry())
     assert storage.total_compressed_size > 0
+    assert (storage.root_dir / "p1").exists() is True
+    assert (storage.root_dir / "p2").exists() is True
 
     purge_res = storage.purge()
     assert purge_res.success is True
     assert purge_res.deleted_count == 2
     assert purge_res.freed_bytes > 0
     assert storage.total_compressed_size == 0
+
+    # Shard directories p1 and p2 should have been deleted because they are empty
+    assert (storage.root_dir / "p1").exists() is False
+    assert (storage.root_dir / "p2").exists() is False
+    # locks directory should be preserved
+    assert (storage.root_dir / "locks").exists() is True
 
 
 def test_storage_invalid_key(tmp_path: Path) -> None:

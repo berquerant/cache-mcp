@@ -421,7 +421,7 @@ class CacheStorage:
             return VersionResult(hit=len(versions) > 0, key=base_key, versions=versions)
 
     def purge(self) -> PurgeResult:
-        """Delete all cached `.zst` files across all subdirectories and reset size tracker."""
+        """Delete all cached `.zst` files across all subdirectories, remove empty shard directories, and reset size tracker."""
         with self.lock:
             deleted_count = 0
             freed_bytes = 0
@@ -434,6 +434,15 @@ class CacheStorage:
                         freed_bytes += sz
                     except OSError:
                         pass
+
+            # Remove empty shard subdirectories (excluding special dirs like locks and logs)
+            for sub in self.root_dir.iterdir():
+                if sub.is_dir() and sub.name not in ("locks", "logs"):
+                    try:
+                        sub.rmdir()
+                    except OSError:
+                        pass
+
             self._total_compressed_size = 0
             return PurgeResult(
                 success=True, deleted_count=deleted_count, freed_bytes=freed_bytes
