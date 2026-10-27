@@ -3,30 +3,6 @@ import os
 import sys
 from pathlib import Path
 
-from cache_mcp.models import compute_cache_key
-
-
-def resolve_key(
-    key: str | None,
-    type_name: str | None,
-    name: str | None,
-    cmd_dir: str | None,
-    args: list[str] | None,
-    stdin: str | None,
-) -> str | None:
-    """Resolve cache key either from explicit key string or by computing from invocation arguments."""
-    if key:
-        return key
-    if type_name and name and cmd_dir:
-        return compute_cache_key(
-            type=type_name,
-            name=name,
-            dir=cmd_dir,
-            args=args or [],
-            stdin=stdin,
-        )
-    return None
-
 
 def read_json_payload(input_spec: str) -> str:
     """Read JSON payload from stdin ('-'), a file path, or direct JSON string."""

@@ -45,6 +45,7 @@ cache-mcp/
 │       ├── main.py            # Top-level CLI entry point
 │       ├── models.py          # Pydantic schemas, Config, key computation, and version parsing
 │       ├── server.py          # MCPServer instance and tool definitions (get, set, exist, delete, version, purge)
+│       ├── service.py         # Unified CacheService handling operations, formatting, and audit logging
 │       └── storage.py         # CacheStorage engine (zstd, sharding, immutable versioning, FIFO eviction)
 ├── tests/
 │   ├── test_cli.py            # Table-driven tests for CLI subcommands
