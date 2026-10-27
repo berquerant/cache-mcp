@@ -36,9 +36,13 @@ cache-mcp/
 │   └── cache_mcp/             # Main Python package
 │       ├── __init__.py        # Package metadata
 │       ├── __main__.py        # Entry point for `python -m cache_mcp`
+│       ├── cli/               # CLI command suite and argument parsing
+│       │   ├── __init__.py    # CLI entry point function `cli()`
+│       │   ├── handlers.py    # Subcommand execution handlers (get, set, ...)
+│       │   └── parser.py      # Argparse parser definitions
 │       ├── lock.py            # Reentrant POSIX file lock with timeout
 │       ├── logger.py          # Rotating audit logger & string value truncation
-│       ├── main.py            # CLI entry point (server and tool subcommands)
+│       ├── main.py            # Top-level CLI entry point
 │       ├── models.py          # Pydantic schemas, Config, key computation, and version parsing
 │       ├── server.py          # MCPServer instance and tool definitions (get, set, exist, delete, version, purge)
 │       └── storage.py         # CacheStorage engine (zstd, sharding, immutable versioning, FIFO eviction)
