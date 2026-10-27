@@ -474,7 +474,9 @@ class CacheStorage:
                         pass
 
             if all:
-                self._total_compressed_size = 0
+                self._total_compressed_size = max(
+                    0, self._total_compressed_size - freed_bytes
+                )
 
             return PurgeResult(
                 success=True,

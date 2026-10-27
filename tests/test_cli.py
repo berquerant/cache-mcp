@@ -310,3 +310,23 @@ def test_cli_logging(tmp_path: Path, capsys) -> None:
     content_after = log_file.read_text(encoding="utf-8").strip()
     line_count_after = len(content_after.splitlines())
     assert line_count_after == line_count_before
+
+
+def test_cli_set_invalid_json_payload(tmp_path: Path, capsys) -> None:
+    cache_dir = str(tmp_path / "cli_cache_invalid_json")
+
+    # 1. Malformed JSON syntax
+    code_malformed = cli(["set", "--dir", cache_dir, "--json", "{invalid_json:"])
+    assert code_malformed == 2
+    captured = capsys.readouterr()
+    err_out = json.loads(captured.err)
+    assert err_out["success"] is False
+    assert "Invalid JSON payload" in err_out["error"]
+
+    # 2. Valid JSON but missing required fields for CacheEntry
+    code_invalid_schema = cli(["set", "--dir", cache_dir, "--json", '{"random": 123}'])
+    assert code_invalid_schema == 2
+    captured = capsys.readouterr()
+    err_out = json.loads(captured.err)
+    assert err_out["success"] is False
+    assert "validation error" in err_out["error"].lower()

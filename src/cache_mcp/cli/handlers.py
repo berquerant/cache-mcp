@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from cache_mcp.cli.parser import read_json_payload
 from cache_mcp.logger import CacheMCPLogger
 from cache_mcp.models import CacheEntry, Config
@@ -135,9 +137,17 @@ def handle_set(
     service = CacheService(config=config, logger=logger)
     if args.json_input:
         raw_json = read_json_payload(args.json_input)
-        data = json.loads(raw_json)
-        entry = CacheEntry.model_validate(data)
-        key = args.key or data.get("key")
+        try:
+            data = json.loads(raw_json)
+            entry = CacheEntry.model_validate(data)
+        except (json.JSONDecodeError, ValidationError) as e:
+            err_output = {"success": False, "error": f"Invalid JSON payload: {e}"}
+            print(json.dumps(err_output), file=sys.stderr)
+            if logger:
+                logger.log_call("set", {}, err_output, 0)
+            return 2
+
+        key = args.key or (data.get("key") if isinstance(data, dict) else None)
         res = service.set_entry(entry, key=key)
     else:
         if not (args.type_name and args.name and args.cmd_dir):

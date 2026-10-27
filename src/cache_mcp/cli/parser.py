@@ -15,7 +15,7 @@ def read_json_payload(input_spec: str) -> str:
         p = Path(input_spec)
         if p.is_file():
             return p.read_text(encoding="utf-8")
-    except OSError:
+    except OSError, ValueError:
         pass
     return input_spec
 

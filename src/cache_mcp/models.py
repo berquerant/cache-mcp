@@ -11,7 +11,7 @@ CACHE_KEY_REGEX = re.compile(r"^[0-9a-zA-Z_-]{2,64}$")
 
 def is_valid_cache_key(key: str) -> bool:
     """Validate that key is safe for filesystem path sharding (no slashes, dots, null bytes)."""
-    return bool(CACHE_KEY_REGEX.match(key)) and not key.startswith(".")
+    return bool(CACHE_KEY_REGEX.match(key))
 
 
 def parse_versioned_key(key: str) -> tuple[str, int | str | None] | None:
