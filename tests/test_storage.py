@@ -171,22 +171,37 @@ def test_purge(tmp_path: Path) -> None:
         max_total_compressed_cache_size=1024 * 1024,
     )
     storage = CacheStorage(config)
-    storage.set("p1_key", make_entry())
-    storage.set("p2_key", make_entry())
+    now = int(time.time())
+
+    # p1 is expired (created 20s ago with ttl=5)
+    storage.set("p1_key", make_entry(ttl=5, created_ts=now - 20))
+    # p2 is active (ttl=600)
+    storage.set("p2_key", make_entry(ttl=600, created_ts=now))
     assert storage.total_compressed_size > 0
     assert (storage.root_dir / "p1").exists() is True
     assert (storage.root_dir / "p2").exists() is True
 
-    purge_res = storage.purge()
-    assert purge_res.success is True
-    assert purge_res.deleted_count == 2
-    assert purge_res.freed_bytes > 0
-    assert storage.total_compressed_size == 0
+    # 1. Default purge: only expired entries are deleted
+    purge_default = storage.purge()
+    assert purge_default.success is True
+    assert purge_default.all is False
+    assert purge_default.deleted_count == 1
+    assert purge_default.freed_bytes > 0
+    assert (
+        storage.root_dir / "p1"
+    ).exists() is False  # p1 was expired, shard dir cleaned up
+    assert (storage.root_dir / "p2").exists() is True  # p2 was active, preserved
+    assert storage.exist("p2_key") is True
 
-    # Shard directories p1 and p2 should have been deleted because they are empty
-    assert (storage.root_dir / "p1").exists() is False
-    assert (storage.root_dir / "p2").exists() is False
-    # locks directory should be preserved
+    # 2. Purge with all=True: all entries are deleted
+    purge_all = storage.purge(all=True)
+    assert purge_all.success is True
+    assert purge_all.all is True
+    assert purge_all.deleted_count == 1  # p2
+    assert storage.total_compressed_size == 0
+    assert (
+        storage.root_dir / "p2"
+    ).exists() is False  # now p2 shard dir is also cleaned up
     assert (storage.root_dir / "locks").exists() is True
 
 

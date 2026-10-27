@@ -108,13 +108,23 @@ def test_cli_set_get_exist_version_delete_purge_flow(tmp_path: Path, capsys) -> 
     assert code == 0
     capsys.readouterr()
 
-    # 9. Purge
+    # 9. Purge default (expired only) -> 0 active entries deleted
     code = cli(["purge", "--dir", cache_dir])
     assert code == 0
     captured = capsys.readouterr()
-    purge_out = json.loads(captured.out)
-    assert purge_out["success"] is True
-    assert purge_out["deleted_count"] == 1
+    purge_default_out = json.loads(captured.out)
+    assert purge_default_out["success"] is True
+    assert purge_default_out["deleted_count"] == 0
+    assert purge_default_out["all"] is False
+
+    # 10. Purge --all -> deletes remaining active entries
+    code_all = cli(["purge", "--dir", cache_dir, "--all"])
+    assert code_all == 0
+    captured = capsys.readouterr()
+    purge_all_out = json.loads(captured.out)
+    assert purge_all_out["success"] is True
+    assert purge_all_out["deleted_count"] == 1
+    assert purge_all_out["all"] is True
 
 
 def test_cli_set_with_json_payload(tmp_path: Path, capsys) -> None:

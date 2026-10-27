@@ -151,13 +151,24 @@ def test_server_purge_tool(test_config: Config) -> None:
         },
     )
 
-    purge_call_res = anyio.run(server.call_tool, "purge", {})
-    assert isinstance(purge_call_res, CallToolResult)
-    assert purge_call_res.is_error is False
-    assert purge_call_res.structured_content is not None
-    assert purge_call_res.structured_content["success"] is True
-    assert purge_call_res.structured_content["deleted_count"] == 1
-    assert purge_call_res.structured_content["freed_bytes"] > 0
+    # Default purge does not delete active unexpired entry
+    purge_default_res = anyio.run(server.call_tool, "purge", {})
+    assert isinstance(purge_default_res, CallToolResult)
+    assert purge_default_res.is_error is False
+    assert purge_default_res.structured_content is not None
+    assert purge_default_res.structured_content["success"] is True
+    assert purge_default_res.structured_content["deleted_count"] == 0
+    assert purge_default_res.structured_content["all"] is False
+
+    # Purge with all=True purges all entries
+    purge_all_res = anyio.run(server.call_tool, "purge", {"all": True})
+    assert isinstance(purge_all_res, CallToolResult)
+    assert purge_all_res.is_error is False
+    assert purge_all_res.structured_content is not None
+    assert purge_all_res.structured_content["success"] is True
+    assert purge_all_res.structured_content["deleted_count"] == 1
+    assert purge_all_res.structured_content["all"] is True
+    assert purge_all_res.structured_content["freed_bytes"] > 0
 
 
 def test_server_version_tool_and_versioned_calls(test_config: Config) -> None:

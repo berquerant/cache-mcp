@@ -56,6 +56,7 @@ class PurgeResult:
     success: bool
     deleted_count: int
     freed_bytes: int
+    all: bool = False
     message: str | None = None
 
 
@@ -420,20 +421,37 @@ class CacheStorage:
             ]
             return VersionResult(hit=len(versions) > 0, key=base_key, versions=versions)
 
-    def purge(self) -> PurgeResult:
-        """Delete all cached `.zst` files across all subdirectories, remove empty shard directories, and reset size tracker."""
+    def purge(self, all: bool = False) -> PurgeResult:
+        """Purge cache files and remove empty shard directories.
+
+        Args:
+            all: When True, deletes all cache files across all subdirectories.
+                 When False (default), deletes only expired cache files.
+
+        Returns:
+            PurgeResult with counts, freed bytes, and all flag.
+        """
         with self.lock:
+            now = int(time.time())
             deleted_count = 0
             freed_bytes = 0
             for p in self.root_dir.glob("*/*.zst"):
-                if p.is_file():
-                    try:
-                        sz = p.stat().st_size
-                        p.unlink(missing_ok=True)
-                        deleted_count += 1
-                        freed_bytes += sz
-                    except OSError:
-                        pass
+                if p.is_file() and not p.name.startswith(".tmp_"):
+                    if all:
+                        try:
+                            sz = p.stat().st_size
+                            p.unlink(missing_ok=True)
+                            deleted_count += 1
+                            freed_bytes += sz
+                        except OSError:
+                            pass
+                    else:
+                        info = self._parse_cache_file_info(p)
+                        if info is not None:
+                            _, _, ttl_ts, _, sz = info
+                            if ttl_ts <= now and self._unlink_and_deduct(p, sz):
+                                deleted_count += 1
+                                freed_bytes += sz
 
             # Remove empty shard subdirectories (excluding special dirs like locks and logs)
             for sub in self.root_dir.iterdir():
@@ -443,9 +461,14 @@ class CacheStorage:
                     except OSError:
                         pass
 
-            self._total_compressed_size = 0
+            if all:
+                self._total_compressed_size = 0
+
             return PurgeResult(
-                success=True, deleted_count=deleted_count, freed_bytes=freed_bytes
+                success=True,
+                deleted_count=deleted_count,
+                freed_bytes=freed_bytes,
+                all=all,
             )
 
     def set(self, key: str, entry: CacheEntry) -> StorageResult:

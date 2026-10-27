@@ -146,16 +146,18 @@ Deletes cache files matching the specified key. If `version` (or `@<version>`) i
   }
   ```
 
-### 6. `purge` (Purge All Caches)
-Deletes all cached files across all subdirectories and resets the in-memory size tracker.
+### 6. `purge` (Purge Caches)
+Deletes cached files across all subdirectories and cleans up empty shard directories. By default, deletes only expired cache files. Pass `all: true` to delete all cache files.
 
-- **Arguments**: None.
+- **Arguments**:
+  - `all` (`bool`, optional, default: `false`): When `false`, deletes only expired cache files. When `true`, deletes all cache files.
 - **Return Value**:
   ```json
   {
     "success": true,
     "deleted_count": 42,
     "freed_bytes": 1048576,
+    "all": false,
     "message": null
   }
   ```
@@ -197,8 +199,11 @@ cache-mcp version --dir ~/.cache/cachemcp --key <key>
 cache-mcp delete --dir ~/.cache/cachemcp --key <key> --version 1
 cache-mcp delete --dir ~/.cache/cachemcp --key <key>
 
-# Purge entire cache
+# Purge expired caches only (default)
 cache-mcp purge --dir ~/.cache/cachemcp
+
+# Purge all caches (including valid unexpired caches)
+cache-mcp purge --dir ~/.cache/cachemcp --all
 ```
 
 ---

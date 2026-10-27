@@ -387,22 +387,27 @@ def create_mcp_server(config: Config) -> MCPServer:
         return result
 
     @mcp.tool()
-    def purge() -> dict[str, Any]:
-        """Purge all cache files across all subdirectories and reclaim disk space.
+    def purge(all: bool = False) -> dict[str, Any]:
+        """Purge cache files across all subdirectories and reclaim disk space.
+
+        Args:
+            all: When True, purges all cache files.
+                 When False (default), purges only expired cache files.
 
         Returns:
-            Dictionary with `success: bool`, `deleted_count: int`, and `freed_bytes: int`.
+            Dictionary with `success: bool`, `deleted_count: int`, `freed_bytes: int`, and `all: bool`.
         """
         start = time.perf_counter()
-        purge_res = storage.purge()
+        purge_res = storage.purge(all=all)
         result = {
             "success": purge_res.success,
             "deleted_count": purge_res.deleted_count,
             "freed_bytes": purge_res.freed_bytes,
+            "all": purge_res.all,
             "message": purge_res.message,
         }
         duration_ms = int((time.perf_counter() - start) * 1000)
-        logger.log_call("purge", {}, result, duration_ms)
+        logger.log_call("purge", {"all": all}, result, duration_ms)
         return result
 
     return mcp

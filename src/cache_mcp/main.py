@@ -270,10 +270,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # purge
-    subparsers.add_parser(
+    purge_parser = subparsers.add_parser(
         "purge",
         parents=[common_sub],
-        help="Purge all caches and reset size ledger",
+        help="Purge cache files (default: expired only, or all with --all)",
+    )
+    purge_parser.add_argument(
+        "--all",
+        action="store_true",
+        default=False,
+        help="Purge all cache entries instead of only expired entries",
     )
 
     return parser
@@ -630,16 +636,17 @@ def cli(argv: list[str] | None = None) -> int:
         case "purge":
             start = time.perf_counter()
             storage = CacheStorage(config)
-            p_res = storage.purge()
+            p_res = storage.purge(all=args.all)
             output = {
                 "success": p_res.success,
                 "deleted_count": p_res.deleted_count,
                 "freed_bytes": p_res.freed_bytes,
+                "all": p_res.all,
                 "message": p_res.message,
             }
             duration_ms = int((time.perf_counter() - start) * 1000)
             if logger:
-                logger.log_call("purge", {}, output, duration_ms)
+                logger.log_call("purge", {"all": args.all}, output, duration_ms)
             print(json.dumps(output, indent=2, ensure_ascii=False))
             return 0 if p_res.success else 1
 
