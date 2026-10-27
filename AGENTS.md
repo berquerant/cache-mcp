@@ -38,11 +38,12 @@ cache-mcp/
 │       ├── __main__.py        # Entry point for `python -m cache_mcp`
 │       ├── lock.py            # Reentrant POSIX file lock with timeout
 │       ├── logger.py          # Rotating audit logger & string value truncation
-│       ├── main.py            # CLI argument parser & entry point
-│       ├── models.py          # Pydantic schemas, Config, and Canonical JSON SHA-256 key computation
-│       ├── server.py          # MCPServer instance and tool definitions (get, set, exist, delete, purge)
-│       └── storage.py         # CacheStorage engine (zstd, sharding, FIFO eviction)
+│       ├── main.py            # CLI entry point (server and tool subcommands)
+│       ├── models.py          # Pydantic schemas, Config, key computation, and version parsing
+│       ├── server.py          # MCPServer instance and tool definitions (get, set, exist, delete, version, purge)
+│       └── storage.py         # CacheStorage engine (zstd, sharding, immutable versioning, FIFO eviction)
 ├── tests/
+│   ├── test_cli.py            # Table-driven tests for CLI subcommands
 │   ├── test_e2e_install.py    # E2E tests (wheel build, clean venv pip install, and CLI execution)
 │   ├── test_lock_and_logger.py# Tests for file locking and structured logging
 │   ├── test_models.py         # Tests for Config, CacheEntry, key derivation
@@ -82,8 +83,9 @@ cache-mcp/
 - **Pattern Matching**: Prefer Python `match` statements over long `if-elif-else` chains for structural branching where applicable.
 - **Platform Scope**: Target POSIX environments only. Concurrency control relies on `fcntl.flock`. Windows-specific handling is out of scope.
 - **Storage & Cache Filename Convention**:
-  - Filenames must follow `<key>_<created_ts>_<ttl_ts>.zst`.
-  - Never perform unnecessary disk reads or zstd decompressions when answering metadata queries (such as in `exist()`).
+  - Filenames must follow `<key>_<created_ts>_<ttl_ts>_<version>.zst`.
+  - Immutability: Existing cache entries are immutable and never overwritten. `set()` creates a new entry with monotonically increasing positive integer version.
+  - Never perform unnecessary disk reads or zstd decompressions when answering metadata queries (such as in `exist()` and `version()`).
 - **MCP Tool Protocol**:
   - Distinguish between expected business outcomes (cache miss, capacity quota skip) which return `isError: false` with structured payload (`hit: false`, `success: false`), and fatal system failures (I/O, lock timeout) which set `isError: true`.
 - **Testing**:

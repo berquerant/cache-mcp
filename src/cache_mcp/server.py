@@ -34,7 +34,7 @@ def _resolve_target_key(
 
 
 def create_mcp_server(config: Config) -> MCPServer:
-    """Creates and configures MCPServer with 5 cache tools: get, set, exist, delete, purge."""
+    """Creates and configures MCPServer with 6 cache tools: get, set, exist, delete, version, purge."""
     mcp = MCPServer("cachemcp")
     storage = CacheStorage(config)
     logger = CacheMCPLogger(config.dir / "logs")
@@ -42,6 +42,7 @@ def create_mcp_server(config: Config) -> MCPServer:
     @mcp.tool()
     def get(
         key: str | None = None,
+        version: int | str | None = None,
         type: str | None = None,
         name: str | None = None,
         args: list[str] | None = None,
@@ -54,10 +55,8 @@ def create_mcp_server(config: Config) -> MCPServer:
         `args`, `stdin`) to compute the key deterministically.
 
         Returns:
-            Dictionary with `hit: bool`, `key: str`, `data: CacheEntry | None`, and optional `reason: str` / `error: str`.
-            If the record is expired or missing, `hit: false` is returned with `reason`
-            (e.g. 'miss', 'expired', 'invalid_key', 'timeout') to allow callers to inspect
-            the outcome without raising an MCP protocol error.
+            Dictionary with `hit: bool`, `key: str`, `version: int | None`, `data: CacheEntry | None`,
+            and optional `reason: str` / `error: str`.
         """
         start = time.perf_counter()
         target_key = _resolve_target_key(key, type, name, dir, args, stdin)
@@ -67,15 +66,25 @@ def create_mcp_server(config: Config) -> MCPServer:
                 "message": "Either 'key' or ('type', 'name', 'dir') must be provided",
             }
             logger.log_call(
-                "get", {"key": key, "type": type, "name": name, "dir": dir}, res, 0
+                "get",
+                {
+                    "key": key,
+                    "version": version,
+                    "type": type,
+                    "name": name,
+                    "dir": dir,
+                },
+                res,
+                0,
             )
             return res
 
         try:
-            get_res = storage.get(target_key)
-            result = {
+            get_res = storage.get(target_key, version=version)
+            result: dict[str, Any] = {
                 "hit": get_res.hit,
-                "key": target_key,
+                "key": get_res.key,
+                "version": get_res.version,
                 "data": get_res.data.model_dump() if get_res.data else None,
             }
             if get_res.reason:
@@ -84,6 +93,7 @@ def create_mcp_server(config: Config) -> MCPServer:
             result = {
                 "hit": False,
                 "key": target_key,
+                "version": None,
                 "reason": "timeout",
                 "error": str(e),
             }
@@ -91,6 +101,7 @@ def create_mcp_server(config: Config) -> MCPServer:
             result = {
                 "hit": False,
                 "key": target_key,
+                "version": None,
                 "reason": "system_error",
                 "error": str(e),
             }
@@ -100,6 +111,7 @@ def create_mcp_server(config: Config) -> MCPServer:
             "get",
             {
                 "key": key,
+                "version": version,
                 "type": type,
                 "name": name,
                 "dir": dir,
@@ -128,15 +140,16 @@ def create_mcp_server(config: Config) -> MCPServer:
         status_code: int | None = None,
         status_string: str | None = None,
     ) -> dict[str, Any]:
-        """Store command or MCP tool execution result into compressed cache.
+        """Store command or MCP tool execution result as a new immutable cache version.
 
         Automatic Attributes:
             - `created_timestamp`: Automatically stamped with current UNIX epoch seconds.
             - `effective_ttl`: Clamped to `min(ttl, config.max_ttl)` to prevent infinite retention.
             - `ttl_timestamp`: Calculated as `created_timestamp + effective_ttl`.
+            - `version`: Monotonically incremented version (1, 2, ...).
 
         Returns:
-            Dictionary with `success: bool`, `key: str`, and `message: str | None`.
+            Dictionary with `success: bool`, `key: str`, `version: int | None`, and `message: str | None`.
         """
         start = time.perf_counter()
         call_args = {
@@ -186,13 +199,14 @@ def create_mcp_server(config: Config) -> MCPServer:
             res = storage.set(key, entry)
             result = {
                 "success": res.success,
-                "key": key,
+                "key": res.key,
+                "version": res.version,
                 "message": res.message,
             }
         except LockTimeoutError as e:
-            result = {"success": False, "key": key, "message": str(e)}
+            result = {"success": False, "key": key, "version": None, "message": str(e)}
         except Exception as e:
-            result = {"success": False, "key": key, "message": str(e)}
+            result = {"success": False, "key": key, "version": None, "message": str(e)}
 
         duration_ms = int((time.perf_counter() - start) * 1000)
         logger.log_call("set", call_args, result, duration_ms)
@@ -201,6 +215,7 @@ def create_mcp_server(config: Config) -> MCPServer:
     @mcp.tool()
     def exist(
         key: str | None = None,
+        version: int | str | None = None,
         type: str | None = None,
         name: str | None = None,
         args: list[str] | None = None,
@@ -220,17 +235,27 @@ def create_mcp_server(config: Config) -> MCPServer:
                 "message": "Either 'key' or ('type', 'name', 'dir') must be provided",
             }
             logger.log_call(
-                "exist", {"key": key, "type": type, "name": name, "dir": dir}, res, 0
+                "exist",
+                {
+                    "key": key,
+                    "version": version,
+                    "type": type,
+                    "name": name,
+                    "dir": dir,
+                },
+                res,
+                0,
             )
             return res
 
-        hit = storage.exist(target_key)
+        hit = storage.exist(target_key, version=version)
         result = {"hit": hit, "key": target_key}
         duration_ms = int((time.perf_counter() - start) * 1000)
         logger.log_call(
             "exist",
             {
                 "key": key,
+                "version": version,
                 "type": type,
                 "name": name,
                 "dir": dir,
@@ -245,16 +270,18 @@ def create_mcp_server(config: Config) -> MCPServer:
     @mcp.tool()
     def delete(
         key: str | None = None,
+        version: int | str | None = None,
         type: str | None = None,
         name: str | None = None,
         args: list[str] | None = None,
         dir: str | None = None,
         stdin: str | None = None,
     ) -> dict[str, Any]:
-        """Delete specific cache entry from disk.
+        """Delete cache entries for a key (all versions or a specific version).
 
         Returns:
-            Dictionary with `hit: bool` (whether file existed) and `deleted: bool`.
+            Dictionary with `hit: bool`, `deleted: bool`, `key: str`, `version: int | str | None`,
+            and `deleted_count: int`.
         """
         start = time.perf_counter()
         target_key = _resolve_target_key(key, type, name, dir, args, stdin)
@@ -265,15 +292,87 @@ def create_mcp_server(config: Config) -> MCPServer:
                 "message": "Either 'key' or ('type', 'name', 'dir') must be provided",
             }
             logger.log_call(
-                "delete", {"key": key, "type": type, "name": name, "dir": dir}, res, 0
+                "delete",
+                {
+                    "key": key,
+                    "version": version,
+                    "type": type,
+                    "name": name,
+                    "dir": dir,
+                },
+                res,
+                0,
             )
             return res
 
-        del_res = storage.delete(target_key)
-        result = {"hit": del_res.hit, "deleted": del_res.deleted, "key": target_key}
+        del_res = storage.delete(target_key, version=version)
+        result = {
+            "hit": del_res.hit,
+            "deleted": del_res.deleted,
+            "key": del_res.key,
+            "version": del_res.version,
+            "deleted_count": del_res.deleted_count,
+        }
         duration_ms = int((time.perf_counter() - start) * 1000)
         logger.log_call(
             "delete",
+            {
+                "key": key,
+                "version": version,
+                "type": type,
+                "name": name,
+                "dir": dir,
+                "args": args,
+                "stdin": stdin,
+            },
+            result,
+            duration_ms,
+        )
+        return result
+
+    @mcp.tool()
+    def version(
+        key: str | None = None,
+        type: str | None = None,
+        name: str | None = None,
+        args: list[str] | None = None,
+        dir: str | None = None,
+        stdin: str | None = None,
+    ) -> dict[str, Any]:
+        """List all existing, non-expired versions for a cache key without decompressing contents.
+
+        Returns:
+            Dictionary with `hit: bool`, `key: str`, and `versions: list[dict]`.
+        """
+        start = time.perf_counter()
+        target_key = _resolve_target_key(key, type, name, dir, args, stdin)
+        if target_key is None:
+            res: dict[str, Any] = {
+                "hit": False,
+                "key": None,
+                "versions": [],
+                "message": "Either 'key' or ('type', 'name', 'dir') must be provided",
+            }
+            logger.log_call(
+                "version",
+                {"key": key, "type": type, "name": name, "dir": dir},
+                res,
+                0,
+            )
+            return res
+
+        ver_res = storage.version(target_key)
+        result = {
+            "hit": ver_res.hit,
+            "key": ver_res.key,
+            "versions": [v.model_dump() for v in ver_res.versions],
+        }
+        if ver_res.reason:
+            result["reason"] = ver_res.reason
+
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        logger.log_call(
+            "version",
             {
                 "key": key,
                 "type": type,

@@ -56,7 +56,9 @@ Call the `get` tool from `cache-mcp`:
 - If `hit: true`: Use `data.stdout` (or `data.stderr`, `data.status_code`) directly without executing the command.
 - If `hit: false`: Proceed to Step 2.
 
-> **Tip**: If you only need to know whether an item exists before deciding on a branch (without needing the content), call `exist`. It checks metadata from filenames with zero disk reads and zero decompression.
+> **Tip**:
+> - If you only need to know whether an item exists before deciding on a branch (without needing the content), call `exist`. It checks metadata from filenames with zero disk reads and zero decompression.
+> - Cache entries are immutable: calling `set` appends a new positive integer version. Query specific versions via `version: 1` or key suffix `@1` (defaults to latest valid version). Call `version` to list all versions.
 
 ### Step 2: Execute Actual Command
 If cache missed, run the command normally. Capture:

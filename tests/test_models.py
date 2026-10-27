@@ -141,3 +141,29 @@ def test_is_valid_cache_key(case_name: str, key: str, expected: bool) -> None:
     from cache_mcp.models import is_valid_cache_key
 
     assert is_valid_cache_key(key) is expected
+
+
+VERSIONED_KEY_CASES = [
+    ("unversioned_base", "abc_123", ("abc_123", None)),
+    ("versioned_int", "abc_123@1", ("abc_123", 1)),
+    ("versioned_high_int", "abc_123@42", ("abc_123", 42)),
+    ("versioned_latest", "abc_123@latest", ("abc_123", "latest")),
+    ("invalid_zero_version", "abc_123@0", None),
+    ("invalid_negative_version", "abc_123@-1", None),
+    ("invalid_alpha_version", "abc_123@v1", None),
+    ("invalid_double_at", "abc_123@1@2", None),
+    ("invalid_base_key", "../bad@1", None),
+]
+
+
+@pytest.mark.parametrize("case_name,key,expected", VERSIONED_KEY_CASES)
+def test_parse_versioned_key(
+    case_name: str, key: str, expected: tuple[str, int | str | None] | None
+) -> None:
+    from cache_mcp.models import format_versioned_key, parse_versioned_key
+
+    res = parse_versioned_key(key)
+    assert res == expected
+    if expected is not None:
+        base, ver = expected
+        assert format_versioned_key(base, ver) == (key if ver is not None else base)

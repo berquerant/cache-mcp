@@ -4,6 +4,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 CACHE_KEY_REGEX = re.compile(r"^[0-9a-zA-Z_-]{2,64}$")
 
 
@@ -12,7 +14,49 @@ def is_valid_cache_key(key: str) -> bool:
     return bool(CACHE_KEY_REGEX.match(key)) and not key.startswith(".")
 
 
-from pydantic import BaseModel, Field
+def parse_versioned_key(key: str) -> tuple[str, int | str | None] | None:
+    """Parse a potentially versioned cache key into (base_key, version).
+
+    Supports:
+        - '<base_key>' -> (base_key, None)
+        - '<base_key>@latest' -> (base_key, 'latest')
+        - '<base_key>@<version>' -> (base_key, <int version>)
+
+    Returns:
+        (base_key, version) if key and version format are valid, else None.
+    """
+    if "@" in key:
+        parts = key.split("@")
+        if len(parts) != 2:
+            return None
+        base_key, ver_str = parts
+        if not is_valid_cache_key(base_key):
+            return None
+        if ver_str == "latest":
+            return base_key, "latest"
+        if ver_str.isdigit() and int(ver_str) > 0:
+            return base_key, int(ver_str)
+        return None
+    if is_valid_cache_key(key):
+        return key, None
+    return None
+
+
+def format_versioned_key(base_key: str, version: int | str | None = None) -> str:
+    """Format base cache key with version suffix if provided."""
+    if version is not None:
+        return f"{base_key}@{version}"
+    return base_key
+
+
+class VersionInfo(BaseModel):
+    """Metadata representing an existing cache entry version."""
+
+    version: int
+    key: str
+    created_timestamp: int
+    ttl_timestamp: int
+    expired: bool
 
 
 class Config(BaseModel):

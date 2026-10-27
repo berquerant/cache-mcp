@@ -48,13 +48,14 @@ uv run python -m cache_mcp.main --dir ~/.cache/cachemcp
 
 ## Provided MCP Tools
 
-The server provides 5 MCP tools. Each tool accepts either a direct `key` (64-character SHA-256 hex string) or tool invocation attributes (`type`, `name`, `dir`, `args`, `stdin`).
+The server provides 6 MCP tools. Each tool accepts either a direct `key` (64-character SHA-256 hex string, optionally with `@<version>` suffix such as `@1` or `@latest`) or tool invocation attributes (`type`, `name`, `dir`, `args`, `stdin`).
 
 ### 1. `get` (Retrieve Cache)
 Retrieves a valid, non-expired cache entry matching the key or execution parameters.
 
 - **Arguments**:
-  - `key` (`string`, optional): Direct cache key.
+  - `key` (`string`, optional): Direct cache key (can include `@<version>` or `@latest`).
+  - `version` (`int | string`, optional): Target version (e.g. `1`, `2`, `"latest"`). Defaults to latest valid version.
   - `type` (`string`, optional): Invocation type (`"command"`, `"mcp"`, etc.).
   - `name` (`string`, optional): Command or tool name (`"git"`, `"read_file"`, etc.).
   - `dir` (`string`, optional): Working directory path.
@@ -64,14 +65,15 @@ Retrieves a valid, non-expired cache entry matching the key or execution paramet
   ```json
   {
     "hit": true,
-    "key": "abcdef...",
+    "key": "abcdef...@2",
+    "version": 2,
     "data": { ... }
   }
   ```
   *Note: On cache miss, expiration, or storage error, returns `"hit": false` along with an optional `"reason"` string (e.g. `"miss"`, `"expired"`, `"invalid_key"`, `"timeout"`, or `"corrupt: ..."`) and optional `"error"` message. Expired files are lazily deleted on access.*
 
 ### 2. `set` (Store Cache)
-Compresses and persists execution results using zstd.
+Compresses and persists execution results as a new immutable version (incrementing version monotonically: 1, 2, ...). Existing versions are never overwritten.
 
 - **Arguments**:
   - `type` (`string`, required), `name` (`string`, required), `dir` (`string`, required)
@@ -83,15 +85,16 @@ Compresses and persists execution results using zstd.
   ```json
   {
     "success": true,
-    "key": "abcdef...",
+    "key": "abcdef...@2",
+    "version": 2,
     "message": null
   }
   ```
 
 ### 3. `exist` (Check Cache Presence)
-Checks if a valid, non-expired cache entry exists for the given key without decompressing payload data.
+Checks if a valid, non-expired cache entry exists for the given key and version without decompressing payload data.
 
-- **Arguments**: Same as `get` (`key` or invocation parameters).
+- **Arguments**: Same as `get` (`key` or invocation parameters, plus optional `version`).
 - **Return Value**:
   ```json
   {
@@ -100,20 +103,50 @@ Checks if a valid, non-expired cache entry exists for the given key without deco
   }
   ```
 
-### 4. `delete` (Delete Cache Entry)
-Deletes cache files matching the specified key.
+### 4. `version` (List Versions)
+Lists all existing, non-expired versions for the given key without reading file payloads.
 
 - **Arguments**: Same as `get` (`key` or invocation parameters).
+- **Return Value**:
+  ```json
+  {
+    "hit": true,
+    "key": "abcdef...",
+    "versions": [
+      {
+        "version": 1,
+        "key": "abcdef...@1",
+        "created_timestamp": 1776000000,
+        "ttl_timestamp": 1776001800,
+        "expired": false
+      },
+      {
+        "version": 2,
+        "key": "abcdef...@2",
+        "created_timestamp": 1776000500,
+        "ttl_timestamp": 1776002300,
+        "expired": false
+      }
+    ]
+  }
+  ```
+
+### 5. `delete` (Delete Cache Entry)
+Deletes cache files matching the specified key. If `version` (or `@<version>`) is omitted, deletes all versions. If `version` is specified, deletes only that version.
+
+- **Arguments**: Same as `get` (`key` or invocation parameters, plus optional `version`).
 - **Return Value**:
   ```json
   {
     "hit": true,
     "deleted": true,
-    "key": "abcdef..."
+    "key": "abcdef...",
+    "version": null,
+    "deleted_count": 2
   }
   ```
 
-### 5. `purge` (Purge All Caches)
+### 6. `purge` (Purge All Caches)
 Deletes all cached files across all subdirectories and resets the in-memory size tracker.
 
 - **Arguments**: None.
@@ -126,6 +159,44 @@ Deletes all cached files across all subdirectories and resets the in-memory size
     "message": null
   }
   ```
+
+---
+
+## Command-Line Interface (CLI)
+
+`cache-mcp` provides a full CLI corresponding to the MCP tools, returning structured JSON on stdout with standard exit codes (0 for hit/success, 1 for miss/not found, 2 for error):
+
+```bash
+# Start MCP STDIO Server (default if subcommand is omitted)
+cache-mcp server --dir ~/.cache/cachemcp
+
+# Store cache entry
+cache-mcp set --dir ~/.cache/cachemcp --type command --name git --cmd-dir $(pwd) --args status --stdout "clean"
+
+# Store via JSON string or file
+cache-mcp set --dir ~/.cache/cachemcp --json '{"type": "command", "name": "test", "dir": "/tmp", "stdout": "ok", "stderr": "", "success": true, "ttl": 300, "created_timestamp": 1776000000, "ttl_timestamp": 1776000300}'
+
+# Query cache entry (defaults to latest version)
+cache-mcp get --dir ~/.cache/cachemcp --key <key>
+
+# Query specific version
+cache-mcp get --dir ~/.cache/cachemcp --key <key> --version 1
+# or
+cache-mcp get --dir ~/.cache/cachemcp --key <key>@1
+
+# Check existence
+cache-mcp exist --dir ~/.cache/cachemcp --key <key>
+
+# List all versions
+cache-mcp version --dir ~/.cache/cachemcp --key <key>
+
+# Delete specific version or all versions
+cache-mcp delete --dir ~/.cache/cachemcp --key <key> --version 1
+cache-mcp delete --dir ~/.cache/cachemcp --key <key>
+
+# Purge entire cache
+cache-mcp purge --dir ~/.cache/cachemcp
+```
 
 ---
 

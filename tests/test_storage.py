@@ -227,3 +227,143 @@ def test_storage_corrupted_file(tmp_path: Path) -> None:
     assert get_res.hit is False
     assert get_res.reason is not None
     assert "corrupt" in get_res.reason
+
+
+def test_storage_immutable_versioning(tmp_path: Path) -> None:
+    config = Config(
+        dir=tmp_path / "cache",
+        max_ttl=3600,
+        max_cache_size=1024 * 1024,
+        max_total_compressed_cache_size=10 * 1024 * 1024,
+    )
+    storage = CacheStorage(config)
+    key = "imm_key"
+
+    res1 = storage.set(key, make_entry(stdout="v1"))
+    assert res1.success is True
+    assert res1.version == 1
+    assert res1.key == f"{key}@1"
+
+    res2 = storage.set(key, make_entry(stdout="v2"))
+    assert res2.success is True
+    assert res2.version == 2
+    assert res2.key == f"{key}@2"
+
+    res3 = storage.set(key, make_entry(stdout="v3"))
+    assert res3.success is True
+    assert res3.version == 3
+    assert res3.key == f"{key}@3"
+
+    # Default get -> latest (v3)
+    get_latest = storage.get(key)
+    assert get_latest.hit is True
+    assert get_latest.version == 3
+    assert get_latest.data is not None and get_latest.data.stdout == "v3"
+
+    # get with @latest
+    get_at_latest = storage.get(f"{key}@latest")
+    assert get_at_latest.hit is True
+    assert get_at_latest.version == 3
+    assert get_at_latest.data is not None and get_at_latest.data.stdout == "v3"
+
+    # get specific version
+    get_v1 = storage.get(f"{key}@1")
+    assert get_v1.hit is True
+    assert get_v1.version == 1
+    assert get_v1.data is not None and get_v1.data.stdout == "v1"
+
+    get_v2 = storage.get(key, version=2)
+    assert get_v2.hit is True
+    assert get_v2.version == 2
+    assert get_v2.data is not None and get_v2.data.stdout == "v2"
+
+    # get non-existent version
+    get_v99 = storage.get(f"{key}@99")
+    assert get_v99.hit is False
+    assert get_v99.reason == "miss"
+
+    # exist checks
+    assert storage.exist(key) is True
+    assert storage.exist(f"{key}@latest") is True
+    assert storage.exist(f"{key}@1") is True
+    assert storage.exist(key, version=2) is True
+    assert storage.exist(f"{key}@99") is False
+
+    # version list
+    ver_res = storage.version(key)
+    assert ver_res.hit is True
+    assert len(ver_res.versions) == 3
+    assert [v.version for v in ver_res.versions] == [1, 2, 3]
+    assert [v.key for v in ver_res.versions] == [f"{key}@1", f"{key}@2", f"{key}@3"]
+
+
+def test_storage_lazy_eviction_mixed_versions(tmp_path: Path) -> None:
+    config = Config(
+        dir=tmp_path / "cache",
+        max_ttl=3600,
+        max_cache_size=1024 * 1024,
+        max_total_compressed_cache_size=10 * 1024 * 1024,
+    )
+    storage = CacheStorage(config)
+    key = "mixed_key"
+    base_time = int(time.time())
+
+    # v1 is expired 10 seconds ago
+    storage.set(key, make_entry(stdout="v1_expired", ttl=1, created_ts=base_time - 11))
+    # v2 is active
+    storage.set(key, make_entry(stdout="v2_active", ttl=600, created_ts=base_time))
+
+    # Accessing key should lazily evict v1, return v2
+    get_res = storage.get(key)
+    assert get_res.hit is True
+    assert get_res.version == 2
+    assert get_res.data is not None and get_res.data.stdout == "v2_active"
+
+    # v1 was evicted
+    assert storage.exist(f"{key}@1") is False
+
+    # version list should now only contain v2
+    ver_res = storage.version(key)
+    assert ver_res.hit is True
+    assert len(ver_res.versions) == 1
+    assert ver_res.versions[0].version == 2
+
+
+def test_storage_delete_specific_and_all_versions(tmp_path: Path) -> None:
+    config = Config(
+        dir=tmp_path / "cache",
+        max_ttl=3600,
+        max_cache_size=1024 * 1024,
+        max_total_compressed_cache_size=10 * 1024 * 1024,
+    )
+    storage = CacheStorage(config)
+    key = "del_test"
+
+    storage.set(key, make_entry(stdout="v1"))
+    storage.set(key, make_entry(stdout="v2"))
+    storage.set(key, make_entry(stdout="v3"))
+
+    # Delete specific version 2
+    del_v2 = storage.delete(key, version=2)
+    assert del_v2.hit is True
+    assert del_v2.deleted is True
+    assert del_v2.version == 2
+    assert del_v2.deleted_count == 1
+    assert storage.exist(f"{key}@2") is False
+    assert storage.exist(f"{key}@1") is True
+    assert storage.exist(f"{key}@3") is True
+
+    # Delete latest version (v3)
+    del_latest = storage.delete(f"{key}@latest")
+    assert del_latest.hit is True
+    assert del_latest.deleted is True
+    assert del_latest.version == 3
+    assert storage.exist(f"{key}@3") is False
+    assert storage.exist(f"{key}@1") is True
+
+    # Delete all remaining versions
+    del_all = storage.delete(key)
+    assert del_all.hit is True
+    assert del_all.deleted is True
+    assert del_all.deleted_count == 1  # remaining v1
+    assert storage.exist(key) is False

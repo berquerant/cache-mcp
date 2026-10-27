@@ -158,3 +158,98 @@ def test_server_purge_tool(test_config: Config) -> None:
     assert purge_call_res.structured_content["success"] is True
     assert purge_call_res.structured_content["deleted_count"] == 1
     assert purge_call_res.structured_content["freed_bytes"] > 0
+
+
+def test_server_version_tool_and_versioned_calls(test_config: Config) -> None:
+    server = create_mcp_server(test_config)
+    set_args_base = {
+        "type": "command",
+        "name": "git",
+        "dir": "/tmp",
+        "ttl": 300,
+        "stderr": "",
+        "success": True,
+    }
+
+    # 1. Set version 1
+    res1 = anyio.run(
+        server.call_tool,
+        "set",
+        {**set_args_base, "stdout": "v1_output"},
+    )
+    assert isinstance(res1, CallToolResult)
+    assert res1.structured_content is not None
+    assert res1.structured_content["success"] is True
+    assert res1.structured_content["version"] == 1
+    v1_key = res1.structured_content["key"]
+
+    # 2. Set version 2
+    res2 = anyio.run(
+        server.call_tool,
+        "set",
+        {**set_args_base, "stdout": "v2_output"},
+    )
+    assert isinstance(res2, CallToolResult)
+    assert res2.structured_content is not None
+    assert res2.structured_content["success"] is True
+    assert res2.structured_content["version"] == 2
+    v2_key = res2.structured_content["key"]
+
+    # 3. Call version tool
+    ver_call = anyio.run(
+        server.call_tool,
+        "version",
+        {"type": "command", "name": "git", "dir": "/tmp"},
+    )
+    assert isinstance(ver_call, CallToolResult)
+    assert ver_call.is_error is False
+    assert ver_call.structured_content is not None
+    assert ver_call.structured_content["hit"] is True
+    versions = ver_call.structured_content["versions"]
+    assert len(versions) == 2
+    assert [v["version"] for v in versions] == [1, 2]
+
+    # 4. Get latest version by default
+    get_latest = anyio.run(
+        server.call_tool,
+        "get",
+        {"type": "command", "name": "git", "dir": "/tmp"},
+    )
+    assert isinstance(get_latest, CallToolResult)
+    assert get_latest.structured_content is not None
+    assert get_latest.structured_content["hit"] is True
+    assert get_latest.structured_content["version"] == 2
+    assert get_latest.structured_content["data"]["stdout"] == "v2_output"
+
+    # 5. Get specific version (v1) via explicit version parameter
+    get_v1 = anyio.run(
+        server.call_tool,
+        "get",
+        {"type": "command", "name": "git", "dir": "/tmp", "version": 1},
+    )
+    assert isinstance(get_v1, CallToolResult)
+    assert get_v1.structured_content is not None
+    assert get_v1.structured_content["hit"] is True
+    assert get_v1.structured_content["version"] == 1
+    assert get_v1.structured_content["data"]["stdout"] == "v1_output"
+
+    # 6. Delete specific version 1
+    del_v1 = anyio.run(
+        server.call_tool,
+        "delete",
+        {"type": "command", "name": "git", "dir": "/tmp", "version": 1},
+    )
+    assert isinstance(del_v1, CallToolResult)
+    assert del_v1.structured_content is not None
+    assert del_v1.structured_content["deleted"] is True
+    assert del_v1.structured_content["version"] == 1
+
+    # Check v1 is deleted, v2 still exists
+    exist_v1 = anyio.run(server.call_tool, "exist", {"key": v1_key})
+    assert isinstance(exist_v1, CallToolResult)
+    assert exist_v1.structured_content is not None
+    assert exist_v1.structured_content["hit"] is False
+    exist_v2 = anyio.run(server.call_tool, "exist", {"key": v2_key})
+    assert isinstance(exist_v2, CallToolResult)
+    assert exist_v2.structured_content is not None
+    assert exist_v2.structured_content["hit"] is True
