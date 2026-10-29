@@ -390,3 +390,62 @@ def test_storage_delete_specific_and_all_versions(tmp_path: Path) -> None:
     assert del_all.deleted is True
     assert del_all.deleted_count == 1  # remaining v1
     assert storage.exist(key) is False
+
+
+def test_storage_secure_permissions(tmp_path: Path) -> None:
+    import stat
+
+    config = Config(
+        dir=tmp_path / "perm_cache",
+        max_ttl=3600,
+        max_cache_size=1024 * 1024,
+        max_total_compressed_cache_size=10 * 1024 * 1024,
+    )
+    storage = CacheStorage(config)
+    res = storage.set("perm_key", make_entry(stdout="secret"))
+    assert res.success is True
+
+    # Check root dir permissions
+    assert stat.S_IMODE(storage.root_dir.stat().st_mode) == 0o700
+
+    # Check shard dir permissions
+    shard_dir = storage.root_dir / "pe"
+    assert shard_dir.exists()
+    assert stat.S_IMODE(shard_dir.stat().st_mode) == 0o700
+
+    # Check .zst cache file permissions
+    cache_files = list(shard_dir.glob("perm_key_*.zst"))
+    assert len(cache_files) == 1
+    assert stat.S_IMODE(cache_files[0].stat().st_mode) == 0o600
+
+
+def test_storage_orphaned_tmp_cleanup(tmp_path: Path) -> None:
+    config = Config(
+        dir=tmp_path / "orphan_cache",
+        max_ttl=3600,
+        max_cache_size=1024 * 1024,
+        max_total_compressed_cache_size=10 * 1024 * 1024,
+    )
+    storage = CacheStorage(config)
+    res = storage.set("active_key", make_entry(stdout="hello"))
+    assert res.success is True
+
+    # Simulate an orphaned .tmp_ file from a crashed process
+    shard_dir = storage.root_dir / "ac"
+    orphan_tmp = shard_dir / ".tmp_9999_fakeuuid.zst"
+    orphan_tmp.write_bytes(b"dummy_tmp_content")
+    assert orphan_tmp.exists()
+
+    # 1. Startup scan on a new CacheStorage instance should clean up the orphan
+    storage2 = CacheStorage(config)
+    assert orphan_tmp.exists() is False
+
+    # 2. Purge(all=True) should also clean up any .tmp_ files and reclaim freed bytes
+    orphan_tmp2 = shard_dir / ".tmp_8888_anotherfake.zst"
+    orphan_tmp2.write_bytes(b"another_tmp_data")
+    assert orphan_tmp2.exists()
+
+    purge_res = storage2.purge(all=True)
+    assert purge_res.success is True
+    assert orphan_tmp2.exists() is False
+    assert purge_res.deleted_count >= 2  # active_key and orphan_tmp2

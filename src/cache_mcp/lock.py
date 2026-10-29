@@ -1,3 +1,4 @@
+import errno
 import os
 import sys
 import threading
@@ -67,7 +68,11 @@ class FileLock:
                 self._local.count += 1
                 return
 
-            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            self.lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                os.chmod(self.lock_path.parent, 0o700)
+            except OSError:
+                pass
             fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
             mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
 
@@ -77,7 +82,19 @@ class FileLock:
                     self._local.fd = fd
                     self._local.count = 1
                     return
-                except BlockingIOError, OSError:
+                except (BlockingIOError, OSError) as e:
+                    # Only retry on actual lock contention (EAGAIN, EWOULDBLOCK, EACCES)
+                    is_contention = isinstance(e, BlockingIOError) or e.errno in (
+                        errno.EAGAIN,
+                        errno.EWOULDBLOCK,
+                        errno.EACCES,
+                    )
+                    if not is_contention:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                        raise
                     if time.monotonic() >= deadline:
                         try:
                             os.close(fd)
@@ -85,7 +102,7 @@ class FileLock:
                             pass
                         raise LockTimeoutError(
                             f"Failed to acquire {'exclusive' if exclusive else 'shared'} lock on {self.lock_path} within {self.timeout}s"
-                        )
+                        ) from e
                     time.sleep(self.poll_interval)
         except Exception:
             self._thread_lock.release()

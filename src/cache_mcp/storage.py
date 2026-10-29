@@ -86,16 +86,26 @@ class CacheStorage:
         """
         self.config = config
         self.root_dir = config.dir
-        self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.root_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(self.root_dir, 0o700)
+        except OSError:
+            pass
         self.lock = FileLock(self.root_dir / "locks" / "lockfile", timeout=10.0)
         self._total_compressed_size = 0
         self._init_scan_total_size()
 
     def _init_scan_total_size(self) -> None:
-        """Scan all .zst files on startup to initialize the in-memory size ledger."""
+        """Scan all .zst files on startup to initialize the in-memory size ledger, cleaning stale .tmp_ files."""
         total = 0
         for p in self.root_dir.glob("*/*.zst"):
             if p.is_file():
+                if p.name.startswith(".tmp_"):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    continue
                 try:
                     total += p.stat().st_size
                 except OSError:
@@ -108,7 +118,11 @@ class CacheStorage:
 
     def _get_sub_dir(self, key: str) -> Path:
         sub = self.root_dir / key[:2]
-        sub.mkdir(parents=True, exist_ok=True)
+        sub.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(sub, 0o700)
+        except OSError:
+            pass
         return sub
 
     @staticmethod
@@ -448,7 +462,20 @@ class CacheStorage:
             deleted_count = 0
             freed_bytes = 0
             for p in self.root_dir.glob("*/*.zst"):
-                if p.is_file() and not p.name.startswith(".tmp_"):
+                if p.is_file():
+                    if p.name.startswith(".tmp_"):
+                        try:
+                            sz = p.stat().st_size
+                            mtime = p.stat().st_mtime
+                            # Clean tmp files if all=True or stale (older than 60s)
+                            if all or (now - mtime >= 60):
+                                p.unlink(missing_ok=True)
+                                deleted_count += 1
+                                freed_bytes += sz
+                        except OSError:
+                            pass
+                        continue
+
                     if all:
                         try:
                             sz = p.stat().st_size
@@ -492,10 +519,17 @@ class CacheStorage:
         ):
             return True
 
-        # Evict expired files across all keys
+        # Evict expired files across all keys, cleaning stale tmp files
         all_files: list[tuple[Path, int, int, int, int]] = []
         for p in self.root_dir.glob("*/*.zst"):
-            if p.is_file() and not p.name.startswith(".tmp_"):
+            if p.is_file():
+                if p.name.startswith(".tmp_"):
+                    try:
+                        if now - p.stat().st_mtime >= 60:
+                            p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    continue
                 info = self._parse_cache_file_info(p)
                 if info is not None:
                     _, created_ts, ttl_ts, ver, sz = info
@@ -539,7 +573,16 @@ class CacheStorage:
         tmp_path = sub_dir / f".tmp_{os.getpid()}_{uuid.uuid4().hex}.zst"
 
         try:
-            tmp_path.write_bytes(compressed_bytes)
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(compressed_bytes)
+            except Exception:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
             tmp_path.replace(target_path)
             self._total_compressed_size += new_size
             versioned_key_str = format_versioned_key(base_key, new_version)
@@ -549,6 +592,12 @@ class CacheStorage:
         except Exception as e:
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
+            return StorageResult(
+                success=False,
+                key=base_key,
+                version=new_version,
+                message=f"Failed to write file: {e}",
+            )
             return StorageResult(
                 success=False,
                 key=base_key,

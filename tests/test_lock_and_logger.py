@@ -119,3 +119,38 @@ def test_logger_rotation_and_format(tmp_path: Path) -> None:
     parsed = json.loads(lines[-1])
     assert parsed["tool"] == "test_tool"
     assert "... (truncated, total length: 120)" in parsed["args"]["long"]
+
+
+def test_file_lock_non_contention_oserror_immediate_fail(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import errno
+    import fcntl
+
+    lock_file = tmp_path / "locks" / "test_error.lock"
+    lock = FileLock(lock_file, timeout=5.0)
+
+    def mock_flock(fd, op):
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(fcntl, "flock", mock_flock)
+
+    start = time.monotonic()
+    with pytest.raises(OSError) as exc_info:
+        lock.acquire()
+    duration = time.monotonic() - start
+
+    assert exc_info.value.errno == errno.EINVAL
+    # Must fail immediately without waiting for the 5-second deadline
+    assert duration < 0.5
+
+
+def test_logger_secure_permissions(tmp_path: Path) -> None:
+    import stat
+
+    log_dir = tmp_path / "secure_logs"
+    logger = CacheMCPLogger(log_dir)
+    logger.log_call("tool", {}, {}, 0)
+
+    assert stat.S_IMODE(log_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((log_dir / "cachemcp.log").stat().st_mode) == 0o600

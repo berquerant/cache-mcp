@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, overload
@@ -72,8 +73,23 @@ class CacheMCPLogger:
             backup_count: Number of rotated backup files to retain (default: 3).
         """
         self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(self.log_dir, 0o700)
+        except OSError:
+            pass
         self.log_file = self.log_dir / "cachemcp.log"
+        if not self.log_file.exists():
+            try:
+                fd = os.open(self.log_file, os.O_CREAT | os.O_WRONLY, 0o600)
+                os.close(fd)
+            except OSError:
+                pass
+        else:
+            try:
+                os.chmod(self.log_file, 0o600)
+            except OSError:
+                pass
 
         self._logger = logging.getLogger(f"cache_mcp_{id(self)}")
         self._logger.setLevel(logging.INFO)
