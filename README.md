@@ -210,7 +210,10 @@ cache-mcp purge --dir ~/.cache/cachemcp --all
 
 ## Design & Architecture Details
 
-For comprehensive design rationale, concurrency analysis, and architecture decisions, see [cachemcp_report.md](cachemcp_report.md).
+- **Atomic Writes & Immutability**: All cache writes create unique `.tmp_<pid>_<uuid>.zst` files and atomically rename via `os.replace`. Existing cache versions are immutable; updates create monotonically incrementing positive integer versions (`@1`, `@2`, ...).
+- **Concurrency & Locking**: Multi-process mutual exclusion is coordinated via POSIX `fcntl.flock` on `<dir>/locks/lockfile` with a 10s timeout, avoiding deadlocks while ensuring linearizability.
+- **Eviction & Disk Budget**: The in-memory capacity ledger tracks total compressed disk usage, prioritizing expired file purges followed by FIFO eviction based on entry creation timestamps.
+- **Secure Isolation**: Cache files (`0600`) and storage directories (`0700`) are created with restricted permissions, preventing unauthorized access in multi-user environments.
 
 ---
 
