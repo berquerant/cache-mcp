@@ -1,3 +1,4 @@
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -264,3 +265,65 @@ def test_server_version_tool_and_versioned_calls(test_config: Config) -> None:
     assert isinstance(exist_v2, CallToolResult)
     assert exist_v2.structured_content is not None
     assert exist_v2.structured_content["hit"] is True
+
+
+def test_service_error_handling_and_logging_on_lock_timeout(
+    test_config: Config, monkeypatch
+) -> None:
+    from cache_mcp.lock import LockTimeoutError
+    from cache_mcp.logger import CacheMCPLogger
+    from cache_mcp.service import CacheService
+
+    logger = CacheMCPLogger(test_config.dir / "logs")
+    service = CacheService(config=test_config, logger=logger)
+
+    # 1. exist with LockTimeoutError
+    def mock_exist(*args, **kwargs):
+        raise LockTimeoutError("Lock timeout during exist")
+
+    monkeypatch.setattr(service.storage, "exist", mock_exist)
+    exist_res = service.exist(key="test_key_timeout")
+    assert exist_res["hit"] is False
+    assert exist_res.get("reason") == "timeout"
+    assert "Lock timeout" in exist_res.get("error", "")
+
+    # 2. delete with LockTimeoutError
+    def mock_delete(*args, **kwargs):
+        raise LockTimeoutError("Lock timeout during delete")
+
+    monkeypatch.setattr(service.storage, "delete", mock_delete)
+    del_res = service.delete(key="test_key_timeout")
+    assert del_res["hit"] is False
+    assert del_res["deleted"] is False
+    assert del_res.get("reason") == "timeout"
+    assert "Lock timeout" in del_res.get("error", "")
+
+    # 3. version with LockTimeoutError
+    def mock_version(*args, **kwargs):
+        raise LockTimeoutError("Lock timeout during version")
+
+    monkeypatch.setattr(service.storage, "version", mock_version)
+    ver_res = service.version(key="test_key_timeout")
+    assert ver_res["hit"] is False
+    assert ver_res["versions"] == []
+    assert ver_res.get("reason") == "timeout"
+    assert "Lock timeout" in ver_res.get("error", "")
+
+    # 4. purge with LockTimeoutError
+    def mock_purge(*args, **kwargs):
+        raise LockTimeoutError("Lock timeout during purge")
+
+    monkeypatch.setattr(service.storage, "purge", mock_purge)
+    purge_res = service.purge(all=True)
+    assert purge_res["success"] is False
+    assert "Lock timeout" in purge_res.get("message", "")
+
+    # Verify audit log recorded all 4 failed calls
+    log_file = test_config.dir / "logs" / "cachemcp.log"
+    assert log_file.exists()
+    logged_tools = [
+        json.loads(line)["tool"]
+        for line in log_file.read_text(encoding="utf-8").strip().splitlines()
+    ]
+    for tool in ("exist", "delete", "version", "purge"):
+        assert tool in logged_tools

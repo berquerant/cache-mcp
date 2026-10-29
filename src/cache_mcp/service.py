@@ -252,8 +252,23 @@ class CacheService:
                 )
             return res
 
-        hit = self.storage.exist(target_key, version=version)
-        result = {"hit": hit, "key": target_key}
+        try:
+            hit = self.storage.exist(target_key, version=version)
+            result: dict[str, Any] = {"hit": hit, "key": target_key}
+        except LockTimeoutError as e:
+            result = {
+                "hit": False,
+                "key": target_key,
+                "reason": "timeout",
+                "error": str(e),
+            }
+        except Exception as e:
+            result = {
+                "hit": False,
+                "key": target_key,
+                "reason": "system_error",
+                "error": str(e),
+            }
         duration_ms = int((time.perf_counter() - start) * 1000)
         if self.logger:
             self.logger.log_call(
@@ -306,14 +321,35 @@ class CacheService:
                 )
             return res
 
-        del_res = self.storage.delete(target_key, version=version)
-        result = {
-            "hit": del_res.hit,
-            "deleted": del_res.deleted,
-            "key": del_res.key,
-            "version": del_res.version,
-            "deleted_count": del_res.deleted_count,
-        }
+        try:
+            del_res = self.storage.delete(target_key, version=version)
+            result = {
+                "hit": del_res.hit,
+                "deleted": del_res.deleted,
+                "key": del_res.key,
+                "version": del_res.version,
+                "deleted_count": del_res.deleted_count,
+            }
+        except LockTimeoutError as e:
+            result = {
+                "hit": False,
+                "deleted": False,
+                "key": target_key,
+                "version": version,
+                "deleted_count": 0,
+                "reason": "timeout",
+                "error": str(e),
+            }
+        except Exception as e:
+            result = {
+                "hit": False,
+                "deleted": False,
+                "key": target_key,
+                "version": version,
+                "deleted_count": 0,
+                "reason": "system_error",
+                "error": str(e),
+            }
         duration_ms = int((time.perf_counter() - start) * 1000)
         if self.logger:
             self.logger.log_call(
@@ -360,14 +396,31 @@ class CacheService:
                 )
             return res
 
-        ver_res = self.storage.version(target_key)
-        result = {
-            "hit": ver_res.hit,
-            "key": ver_res.key,
-            "versions": [v.model_dump() for v in ver_res.versions],
-        }
-        if ver_res.reason:
-            result["reason"] = ver_res.reason
+        try:
+            ver_res = self.storage.version(target_key)
+            result = {
+                "hit": ver_res.hit,
+                "key": ver_res.key,
+                "versions": [v.model_dump() for v in ver_res.versions],
+            }
+            if ver_res.reason:
+                result["reason"] = ver_res.reason
+        except LockTimeoutError as e:
+            result = {
+                "hit": False,
+                "key": target_key,
+                "versions": [],
+                "reason": "timeout",
+                "error": str(e),
+            }
+        except Exception as e:
+            result = {
+                "hit": False,
+                "key": target_key,
+                "versions": [],
+                "reason": "system_error",
+                "error": str(e),
+            }
         duration_ms = int((time.perf_counter() - start) * 1000)
         if self.logger:
             self.logger.log_call(
@@ -388,14 +441,31 @@ class CacheService:
     def purge(self, all: bool = False) -> dict[str, Any]:
         """Purge cache files across all subdirectories and reclaim disk space."""
         start = time.perf_counter()
-        purge_res = self.storage.purge(all=all)
-        result = {
-            "success": purge_res.success,
-            "deleted_count": purge_res.deleted_count,
-            "freed_bytes": purge_res.freed_bytes,
-            "all": purge_res.all,
-            "message": purge_res.message,
-        }
+        try:
+            purge_res = self.storage.purge(all=all)
+            result = {
+                "success": purge_res.success,
+                "deleted_count": purge_res.deleted_count,
+                "freed_bytes": purge_res.freed_bytes,
+                "all": purge_res.all,
+                "message": purge_res.message,
+            }
+        except LockTimeoutError as e:
+            result = {
+                "success": False,
+                "deleted_count": 0,
+                "freed_bytes": 0,
+                "all": all,
+                "message": str(e),
+            }
+        except Exception as e:
+            result = {
+                "success": False,
+                "deleted_count": 0,
+                "freed_bytes": 0,
+                "all": all,
+                "message": str(e),
+            }
         duration_ms = int((time.perf_counter() - start) * 1000)
         if self.logger:
             self.logger.log_call("purge", {"all": all}, result, duration_ms)
