@@ -1,9 +1,33 @@
 import json
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, overload
+
+SENSITIVE_KEY_PATTERNS = {
+    "password",
+    "token",
+    "secret",
+    "authorization",
+    "api_key",
+    "apikey",
+    "access_token",
+    "private_key",
+}
+
+SENSITIVE_FLAG_REGEX = re.compile(
+    r"^(--?[a-zA-Z0-9_-]*(?:token|password|secret|key|auth)[a-zA-Z0-9_-]*=)(.*)$",
+    re.IGNORECASE,
+)
+AUTH_BEARER_REGEX = re.compile(r"^(Bearer\s+)[^\s]+$", re.IGNORECASE)
+
+
+def is_sensitive_key(key: str) -> bool:
+    """Check if key name matches common sensitive credentials or token patterns."""
+    normalized = key.lower().replace("-", "_")
+    return any(p in normalized for p in SENSITIVE_KEY_PATTERNS)
 
 
 @overload
@@ -23,29 +47,53 @@ def truncate_value[T](val: T, max_len: int = 100) -> T: ...
 
 
 def truncate_value(val: Any, max_len: int = 100) -> Any:
-    """Truncate string-type values exceeding max_len characters while preserving container types.
+    """Truncate string-type values exceeding max_len characters while preserving container types and redacting secrets.
 
-    Why truncation:
+    Why truncation & redaction:
         Tool executions frequently yield immense standard output/error (e.g. megabytes
-        of build logs, git diffs). Writing untruncated blobs to log files degrades I/O,
-        fills disk quickly, and wastes token contexts if agents inspect audit logs.
-        Truncating to 100 characters preserves structural context while capping log footprint.
-
-    Format:
-        val[:100] + "... (truncated, total length: " + str(len(val)) + ")"
+        of build logs, git diffs) or process credentials (tokens, auth headers).
+        Writing untruncated blobs degrades I/O and fills disk, while logging credentials
+        causes information disclosure. Sensitive parameters are masked as ***REDACTED***
+        and strings exceeding max_len are safely truncated.
     """
     match val:
         case str():
+            if m := SENSITIVE_FLAG_REGEX.match(val):
+                return f"{m.group(1)}***REDACTED***"
+            if m := AUTH_BEARER_REGEX.match(val):
+                return f"{m.group(1)}***REDACTED***"
             if len(val) > max_len:
                 return f"{val[:max_len]}... (truncated, total length: {len(val)})"
             return val
         case list():
-            items = [truncate_value(item, max_len=max_len) for item in val[:50]]
+            items = []
+            prev_was_flag = False
+            for item in val[:50]:
+                if prev_was_flag and isinstance(item, str):
+                    items.append("***REDACTED***")
+                    prev_was_flag = False
+                    continue
+                if (
+                    isinstance(item, str)
+                    and item.startswith("-")
+                    and "=" not in item
+                    and is_sensitive_key(item.lstrip("-"))
+                ):
+                    prev_was_flag = True
+                else:
+                    prev_was_flag = False
+                items.append(truncate_value(item, max_len=max_len))
             if len(val) > 50:
                 items.append(f"... (truncated {len(val) - 50} more items)")
             return items
         case dict():
-            return {k: truncate_value(v, max_len=max_len) for k, v in val.items()}
+            result = {}
+            for k, v in val.items():
+                if isinstance(k, str) and is_sensitive_key(k):
+                    result[k] = "***REDACTED***"
+                else:
+                    result[k] = truncate_value(v, max_len=max_len)
+            return result
         case _:
             return val
 

@@ -34,6 +34,21 @@ TRUNCATE_TEST_CASES = [
         ["cmd", "y" * 110],
         ["cmd", "y" * 100 + "... (truncated, total length: 110)"],
     ),
+    (
+        "dict_with_sensitive_keys",
+        {"api_key": "secret123", "password": "pass", "normal": "ok"},
+        {"api_key": "***REDACTED***", "password": "***REDACTED***", "normal": "ok"},
+    ),
+    (
+        "list_with_flag_and_combined_tokens",
+        ["--token", "mytoken", "--auth-token=secret456", "Bearer mytoken789"],
+        [
+            "--token",
+            "***REDACTED***",
+            "--auth-token=***REDACTED***",
+            "Bearer ***REDACTED***",
+        ],
+    ),
 ]
 
 
@@ -42,9 +57,13 @@ def test_truncate_value(case_name: str, input_val: object, expected: object) -> 
     assert truncate_value(input_val) == expected
 
 
-def _hold_lock_child(lock_path: str, hold_seconds: float) -> None:
+def _hold_lock_child(
+    lock_path: str, hold_seconds: float, ready_event: object | None = None
+) -> None:
     lock = FileLock(lock_path, timeout=5.0)
     lock.acquire(exclusive=True)
+    if ready_event is not None and hasattr(ready_event, "set"):
+        ready_event.set()
     time.sleep(hold_seconds)
     lock.release()
 
@@ -80,11 +99,12 @@ def test_file_lock(
         assert getattr(lock._local, "fd", None) is None
     else:
         # spawn child holding lock for 1 second
+        ready_event = multiprocessing.Event()
         proc = multiprocessing.Process(
-            target=_hold_lock_child, args=(str(lock_file), 0.8)
+            target=_hold_lock_child, args=(str(lock_file), 0.8, ready_event)
         )
         proc.start()
-        time.sleep(0.1)  # wait for child to grab lock
+        assert ready_event.wait(timeout=5.0), "Child failed to acquire lock in time"
 
         lock = FileLock(lock_file, timeout=timeout, poll_interval=0.02)
         try:

@@ -13,6 +13,7 @@ from cache_mcp.models import (
     Config,
     VersionInfo,
     format_versioned_key,
+    is_valid_cache_key,
     parse_versioned_key,
 )
 
@@ -134,16 +135,28 @@ class CacheStorage:
         Returns None if parsing fails or path is inaccessible.
         """
         try:
-            parts = path.stem.rsplit("_", maxsplit=3)
             size = path.stat().st_size
-            match parts:
-                case [key, created_str, ttl_str, ver_str]:
-                    return key, int(created_str), int(ttl_str), int(ver_str), size
-                case [key, created_str, ttl_str]:
-                    # Legacy format fallback
-                    return key, int(created_str), int(ttl_str), 1, size
-                case _:
-                    return None
+            stem = path.stem
+
+            # 1. Standard format: <key>_<created>_<ttl>_<version>
+            parts_std = stem.rsplit("_", maxsplit=3)
+            if len(parts_std) == 4:
+                k, c, t, v = parts_std
+                if (
+                    c.isdigit()
+                    and t.isdigit()
+                    and v.isdigit()
+                    and int(v) > 0
+                    and is_valid_cache_key(k)
+                ):
+                    return k, int(c), int(t), int(v), size
+
+            # 2. Legacy format fallback: <key>_<created>_<ttl>
+            parts_leg = stem.rsplit("_", maxsplit=2)
+            if len(parts_leg) == 3:
+                k, c, t = parts_leg
+                if c.isdigit() and t.isdigit() and is_valid_cache_key(k):
+                    return k, int(c), int(t), 1, size
         except ValueError, OSError:
             pass
         return None

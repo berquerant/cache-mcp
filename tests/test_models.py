@@ -167,3 +167,18 @@ def test_parse_versioned_key(
     if expected is not None:
         base, ver = expected
         assert format_versioned_key(base, ver) == (key if ver is not None else base)
+
+
+def test_package_exports() -> None:
+    import cache_mcp
+
+    assert hasattr(cache_mcp, "CacheEntry")
+    assert hasattr(cache_mcp, "CacheService")
+    assert hasattr(cache_mcp, "Config")
+    assert hasattr(cache_mcp, "create_mcp_server")
+    assert set(cache_mcp.__all__) == {
+        "CacheEntry",
+        "CacheService",
+        "Config",
+        "create_mcp_server",
+    }

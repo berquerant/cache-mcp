@@ -449,3 +449,29 @@ def test_storage_orphaned_tmp_cleanup(tmp_path: Path) -> None:
     assert purge_res.success is True
     assert orphan_tmp2.exists() is False
     assert purge_res.deleted_count >= 2  # active_key and orphan_tmp2
+
+
+def test_parse_cache_file_info_with_underscores(tmp_path: Path) -> None:
+    # 1. Standard format with underscores in key
+    std_file = tmp_path / "my_custom_key_1000_2000_3.zst"
+    std_file.write_bytes(b"dummy")
+    parsed_std = CacheStorage._parse_cache_file_info(std_file)
+    assert parsed_std is not None
+    key, created, ttl, ver, size = parsed_std
+    assert key == "my_custom_key"
+    assert created == 1000
+    assert ttl == 2000
+    assert ver == 3
+    assert size == len(b"dummy")
+
+    # 2. Legacy format with underscores in key
+    leg_file = tmp_path / "my_custom_key_1000_2000.zst"
+    leg_file.write_bytes(b"dummy")
+    parsed_leg = CacheStorage._parse_cache_file_info(leg_file)
+    assert parsed_leg is not None
+    lkey, lcreated, lttl, lver, lsize = parsed_leg
+    assert lkey == "my_custom_key"
+    assert lcreated == 1000
+    assert lttl == 2000
+    assert lver == 1
+    assert lsize == len(b"dummy")
